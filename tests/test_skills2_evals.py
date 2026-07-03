@@ -1145,6 +1145,22 @@ class TestPrintReportText:
         assert 'Average delta' in r.stdout
         assert 'History file' in r.stdout
 
+    def test_parity_rejects_explicit_mode(self, tmp_path):
+        # Help documents --parity and --mode as mutually exclusive;
+        # enforce it instead of silently ignoring --mode
+        eval_dir, _ = _make_temp_eval_setup(
+            tmp_path, 'lc', prompt_text='x',
+            output_text='captured', baseline_text='baseline',
+        )
+        for mode in ('structural', 'judge'):
+            r = subprocess.run(
+                [sys.executable, EVAL_RUNNER,
+                 '--eval-dir', eval_dir, '--parity', f'--mode={mode}'],
+                capture_output=True, text=True,
+            )
+            assert r.returncode == 2
+            assert 'mutually exclusive' in r.stderr
+
     def test_parity_cli_skipped_eval_text(self, tmp_path):
         eval_dir, _ = _make_temp_eval_setup(
             tmp_path, 'lc', prompt_text='x',

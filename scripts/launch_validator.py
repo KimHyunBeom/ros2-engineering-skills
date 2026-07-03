@@ -71,8 +71,8 @@ class LaunchFileVisitor(ast.NodeVisitor):
         self.filepath = filepath
         self.source = source
         self.issues: list[Issue] = []
-        # (name, namespace, line, conditional)
-        self.node_names: list[tuple[str, str, int, bool]] = []
+        # (name, namespace, line, condition fingerprints)
+        self.node_names: list[tuple[str, str, int, tuple]] = []
         self.has_generate_func = False
         # Namespaces pushed by PushRosNamespace actions in enclosing action
         # lists (tracked at the list literal, so lists assigned to variables
@@ -80,8 +80,8 @@ class LaunchFileVisitor(ast.NodeVisitor):
         # the pushed namespace is dynamic (e.g. LaunchConfiguration) and
         # cannot be resolved statically.
         self._group_namespace_stack: list[Optional[str]] = []
-        # Depth of enclosing GroupActions guarded by a condition= argument.
-        self._condition_depth: int = 0
+        # Fingerprints of condition= arguments on enclosing GroupActions.
+        self._condition_stack: list[tuple] = []
         self._composable_containers: list[tuple[str, int]] = []  # (name, line)
         self._composable_nodes: list[tuple[str, int]] = []  # (plugin, line)
         self._included_files: list[str] = []
@@ -139,12 +139,31 @@ class LaunchFileVisitor(ast.NodeVisitor):
         GroupAction(actions=var) gets the same namespace scoping as an
         inline list.
         """
-        has_condition = self._get_keyword_value(node, "condition") is not None
-        if has_condition:
-            self._condition_depth += 1
+        cond = self._get_keyword_value(node, "condition")
+        if cond is not None:
+            self._condition_stack.append(self._condition_fingerprint(cond))
         self.generic_visit(node)
-        if has_condition:
-            self._condition_depth -= 1
+        if cond is not None:
+            self._condition_stack.pop()
+
+    def _condition_fingerprint(self, cond: ast.AST) -> tuple:
+        """Structural fingerprint of a condition= expression.
+
+        IfCondition/UnlessCondition are distinguished by kind so that an
+        If/Unless pair over the same expression can be proven mutually
+        exclusive. ast.dump gives structural (not object) identity, which
+        is what launch semantics need: two IfCondition(LaunchConfiguration
+        ('x')) calls evaluate identically at runtime.
+        """
+        if isinstance(cond, ast.Call):
+            call_name = self._get_call_name(cond)
+            if call_name in ("IfCondition", "UnlessCondition"):
+                kind = "if" if call_name == "IfCondition" else "unless"
+                arg: Optional[ast.AST] = cond.args[0] if cond.args else None
+                if arg is None and cond.keywords:
+                    arg = cond.keywords[0].value
+                return (kind, ast.dump(arg) if arg is not None else "<unknown>")
+        return ("other", ast.dump(cond))
 
     def visit_List(self, node: ast.List) -> None:
         """Visit list elements applying PushRosNamespace scope.
@@ -228,11 +247,13 @@ class LaunchFileVisitor(ast.NodeVisitor):
         ns_str = self._get_string_value(ns_node) if ns_node else ""
         ns_is_dynamic = ns_node is not None and ns_str is None
         effective_ns = self._effective_namespace(ns_str or "")
-        conditional = (self._condition_depth > 0
-                       or self._get_keyword_value(node, "condition") is not None)
+        conds = tuple(self._condition_stack)
+        own_cond = self._get_keyword_value(node, "condition")
+        if own_cond is not None:
+            conds = conds + (self._condition_fingerprint(own_cond),)
         if name_str and not ns_is_dynamic and effective_ns is not None:
             self.node_names.append(
-                (name_str, effective_ns, node.lineno, conditional))
+                (name_str, effective_ns, node.lineno, conds))
 
         # Check for deprecated 'node_name' instead of 'name'
         if self._get_keyword_value(node, "node_name") is not None:
@@ -455,28 +476,48 @@ class LaunchFileVisitor(ast.NodeVisitor):
             parts.append(node_ns)
         return "/".join(p.strip("/") for p in parts if p.strip("/"))
 
+    @staticmethod
+    def _conditions_mutually_exclusive(a: tuple, b: tuple) -> bool:
+        """Provably exclusive: an IfCondition(X) on one side paired with an
+        UnlessCondition(X) over a structurally identical X on the other."""
+        opposite = {"if": "unless", "unless": "if"}
+        return any((opposite[kind], expr) in b
+                   for kind, expr in a if kind in opposite)
+
     def check_duplicates(self) -> None:
         """Check for duplicate node names in the same effective namespace.
 
-        Nodes guarded by a condition (their own condition= or an enclosing
-        conditional GroupAction) are skipped: mutually exclusive
-        IfCondition/UnlessCondition branches legitimately reuse a name and
-        cannot be proven to coexist statically.
+        Severity depends on what can be proven statically:
+        - both unconditional, or both guarded by structurally identical
+          conditions -> error (they always coexist when launched)
+        - If/Unless pair over the same expression -> provably exclusive,
+          no issue
+        - otherwise (differing or unknown conditions) -> warning: they
+          collide only if the conditions are true simultaneously
         """
-        seen: dict[str, int] = {}
-        for name, ns, line, conditional in self.node_names:
-            if conditional:
-                continue
+        seen: dict[str, tuple[int, tuple]] = {}
+        for name, ns, line, conds in self.node_names:
             key = f"{ns}/{name}"
-            if key in seen:
-                issue = Issue(
-                    self.filepath, line, "error",
-                    f"Duplicate node name '{name}' in namespace '{ns}' "
-                    f"(first defined at line {seen[key]})")
-                if not _line_has_suppression(self.source, line):
-                    self.issues.append(issue)
+            if key not in seen:
+                seen[key] = (line, conds)
+                continue
+            first_line, first_conds = seen[key]
+            if _line_has_suppression(self.source, line):
+                continue
+            if self._conditions_mutually_exclusive(first_conds, conds):
+                continue
+            if first_conds == conds:
+                severity = "error"
+                extra = (" (both guarded by the same condition)"
+                         if conds else "")
             else:
-                seen[key] = line
+                severity = "warning"
+                extra = (" (conditional; collides if the conditions are "
+                         "true simultaneously)")
+            self.issues.append(Issue(
+                self.filepath, line, severity,
+                f"Duplicate node name '{name}' in namespace '{ns}' "
+                f"(first defined at line {first_line}){extra}"))
 
 
 def check_raw_patterns(filepath: str, source: str) -> list[Issue]:
@@ -629,9 +670,19 @@ Note: Only Python launch files (*.launch.py, *_launch.py) are validated.
         for issue in filtered:
             print(issue)
         print()
-        print(f"Found: {result.error_count} error(s), "
-              f"{result.warning_count} warning(s), "
-              f"{len(result.issues) - result.error_count - result.warning_count} info(s)")
+        # Count what was displayed, not what the filter hid
+        shown_errors = sum(1 for i in filtered if i.severity == "error")
+        shown_warnings = sum(1 for i in filtered if i.severity == "warning")
+        print(f"Found: {shown_errors} error(s), "
+              f"{shown_warnings} warning(s), "
+              f"{len(filtered) - shown_errors - shown_warnings} info(s)")
+        hidden = len(result.issues) - len(filtered)
+        if hidden:
+            print(f"({hidden} lower-severity issue(s) hidden by "
+                  f"--severity {args.severity})")
+    elif result.issues:
+        print(f"No issues at severity >= {args.severity} "
+              f"({len(result.issues)} lower-severity issue(s) hidden).")
     else:
         print("No issues found.")
 

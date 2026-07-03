@@ -775,7 +775,9 @@ def main():
     parser.add_argument(
         '--mode',
         choices=['structural', 'judge'],
-        default='structural',
+        default=None,  # resolved to 'structural' below; None distinguishes
+                       # an explicit --mode from the default for the
+                       # --parity exclusivity check
         help=('structural (default): score evals/expected fixtures - cheap '
               'CI gate. judge: score user-pasted real model outputs under '
               'evals/outputs/ - see docs/EVAL_WORKFLOW.md'))
@@ -811,6 +813,10 @@ def main():
     config = load_eval_config(eval_dir)
 
     if args.parity:
+        if args.mode is not None:
+            print('Error: --parity and --mode are mutually exclusive; '
+                  'parity is its own scoring mode.', file=sys.stderr)
+            sys.exit(2)
         if args.eval_name:
             print('Error: --parity does not support --eval-name; runs all '
                   'evals to compute aggregate delta.', file=sys.stderr)
@@ -827,7 +833,8 @@ def main():
         # on a single run is informational, not a CI failure.
         sys.exit(2 if report['deprecation_candidate'] else 0)
 
-    content_source = 'output' if args.mode == 'judge' else 'expected'
+    mode = args.mode or 'structural'
+    content_source = 'output' if mode == 'judge' else 'expected'
     report = run_all_evals(config, eval_dir,
                            eval_name=args.eval_name,
                            verbose=args.verbose,

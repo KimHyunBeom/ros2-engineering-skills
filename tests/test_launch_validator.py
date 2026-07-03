@@ -158,6 +158,47 @@ def generate_launch_description():
     ])
 """
 
+CONDITIONAL_DIFFERENT_CONFIGS = """from launch import LaunchDescription
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(package='a', executable='n1', name='driver', output='screen',
+             condition=IfCondition(LaunchConfiguration('use_a'))),
+        Node(package='b', executable='n2', name='driver', output='screen',
+             condition=IfCondition(LaunchConfiguration('use_b'))),
+    ])
+"""
+
+CONDITIONAL_IDENTICAL_CONFIGS = """from launch import LaunchDescription
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(package='a', executable='n1', name='driver', output='screen',
+             condition=IfCondition(LaunchConfiguration('use_sim'))),
+        Node(package='b', executable='n2', name='driver', output='screen',
+             condition=IfCondition(LaunchConfiguration('use_sim'))),
+    ])
+"""
+
+MIXED_CONDITIONAL_UNCONDITIONAL = """from launch import LaunchDescription
+from launch.conditions import IfCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(package='a', executable='n1', name='driver', output='screen'),
+        Node(package='b', executable='n2', name='driver', output='screen',
+             condition=IfCondition(LaunchConfiguration('extra'))),
+    ])
+"""
+
 DYNAMIC_GROUP_NAMESPACE = """from launch import LaunchDescription
 from launch.actions import GroupAction
 from launch.substitutions import LaunchConfiguration
@@ -371,6 +412,33 @@ class TestValidateFile:
                                  CONDITIONAL_NODES)
         issues = validate_file(path)
         assert not any("Duplicate" in i.message for i in issues)
+
+    def test_different_conditions_warn_not_error(self, tmp_path):
+        # IfCondition(use_a) / IfCondition(use_b) can both be true, but that
+        # cannot be proven statically: warning, not error (exit stays 0)
+        path = write_launch_file(tmp_path, "diff_cond.launch.py",
+                                 CONDITIONAL_DIFFERENT_CONFIGS)
+        issues = validate_file(path)
+        dups = [i for i in issues if "Duplicate" in i.message]
+        assert len(dups) == 1
+        assert dups[0].severity == "warning"
+
+    def test_identical_conditions_are_error(self, tmp_path):
+        # Both nodes launch together whenever use_sim is true
+        path = write_launch_file(tmp_path, "same_cond.launch.py",
+                                 CONDITIONAL_IDENTICAL_CONFIGS)
+        issues = validate_file(path)
+        dups = [i for i in issues if "Duplicate" in i.message]
+        assert len(dups) == 1
+        assert dups[0].severity == "error"
+
+    def test_mixed_conditional_unconditional_warns(self, tmp_path):
+        path = write_launch_file(tmp_path, "mixed_cond.launch.py",
+                                 MIXED_CONDITIONAL_UNCONDITIONAL)
+        issues = validate_file(path)
+        dups = [i for i in issues if "Duplicate" in i.message]
+        assert len(dups) == 1
+        assert dups[0].severity == "warning"
 
     def test_dynamic_group_namespace_skips_duplicate_check(self, tmp_path):
         path = write_launch_file(tmp_path, "dyn.launch.py",
