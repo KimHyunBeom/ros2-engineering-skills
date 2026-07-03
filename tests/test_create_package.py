@@ -452,3 +452,54 @@ class TestValidation:
         run_script("my_robot", "--type", "cpp", "--dest", str(tmp_path))
         result = run_script("my_robot", "--type", "cpp", "--dest", str(tmp_path), "--force")
         assert result.returncode == 0
+
+    def test_component_rejected_for_non_cpp(self, tmp_path):
+        # Previously silently ignored; must now be an explicit error
+        result = run_script("my_pkg", "--type", "python", "--component",
+                            "--dest", str(tmp_path))
+        assert result.returncode == 2
+        assert "--component" in result.stderr
+
+    def test_lifecycle_rejected_for_interfaces(self, tmp_path):
+        result = run_script("my_pkg", "--type", "interfaces", "--lifecycle",
+                            "--dest", str(tmp_path))
+        assert result.returncode == 2
+        assert "--lifecycle" in result.stderr
+
+    def test_robots_rejected_for_interfaces(self, tmp_path):
+        result = run_script("my_pkg", "--type", "interfaces", "--robots", "3",
+                            "--dest", str(tmp_path))
+        assert result.returncode == 2
+        assert "--robots" in result.stderr
+
+    def test_negative_robots_rejected(self, tmp_path):
+        result = run_script("my_pkg", "--type", "cpp", "--robots", "-1",
+                            "--dest", str(tmp_path))
+        assert result.returncode == 2
+        assert "--robots" in result.stderr
+
+    def test_lifecycle_still_allowed_for_cpp(self, tmp_path):
+        # Documented no-op: C++ template is lifecycle by default
+        result = run_script("my_pkg", "--type", "cpp", "--lifecycle",
+                            "--dest", str(tmp_path))
+        assert result.returncode == 0
+
+
+class TestLaunchExecDepends:
+    def _exec_depends(self, pkg_xml_path):
+        tree = ET.parse(pkg_xml_path)
+        return [e.text for e in tree.getroot().findall("exec_depend")]
+
+    def test_cpp_package_declares_launch_deps(self, tmp_path):
+        # bringup.launch.py imports launch, launch_ros, lifecycle_msgs
+        run_script("my_robot", "--type", "cpp", "--dest", str(tmp_path))
+        deps = self._exec_depends(tmp_path / "my_robot" / "package.xml")
+        assert "launch" in deps
+        assert "launch_ros" in deps
+        assert "lifecycle_msgs" in deps
+
+    def test_python_package_declares_launch_deps(self, tmp_path):
+        run_script("my_mon", "--type", "python", "--dest", str(tmp_path))
+        deps = self._exec_depends(tmp_path / "my_mon" / "package.xml")
+        assert "launch" in deps
+        assert "launch_ros" in deps

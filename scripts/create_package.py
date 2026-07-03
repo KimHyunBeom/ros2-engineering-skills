@@ -396,9 +396,11 @@ TEST_F({class_name}Test, NodeCreation)
     deps = ["rclcpp", "rclcpp_lifecycle"]
     if component:
         deps.append("rclcpp_components")
+    # bringup.launch.py imports launch, launch_ros, and lifecycle_msgs
     _write_package_xml(pkg, name, "ament_cmake", deps,
                        maintainer_name=maintainer_name,
-                       maintainer_email=maintainer_email)
+                       maintainer_email=maintainer_email,
+                       extra_exec=["launch", "launch_ros", "lifecycle_msgs"])
     print(f"Created C++ package: {pkg}")
 
 
@@ -672,9 +674,11 @@ def test_pep257():
     py_deps = ["rclpy"]
     if lifecycle:
         py_deps.append("lifecycle_msgs")
+    # bringup.launch.py imports launch and launch_ros
     _write_package_xml(pkg, name, "ament_python", py_deps,
                        maintainer_name=maintainer_name,
                        maintainer_email=maintainer_email,
+                       extra_exec=["launch", "launch_ros"],
                        extra_test=["ament_copyright", "ament_flake8",
                                    "ament_pep257", "python3-pytest"])
     print(f"Created Python package: {pkg}")
@@ -1314,6 +1318,19 @@ def main():
     parser.add_argument("--force", action="store_true", default=False,
                         help="Overwrite existing package directory")
     args = parser.parse_args()
+
+    # Reject flag combinations that would otherwise be silently ignored
+    if args.component and args.type != "cpp":
+        parser.error(f"--component only applies to --type cpp "
+                     f"(got --type {args.type})")
+    if args.lifecycle and args.type not in ("cpp", "python"):
+        parser.error(f"--lifecycle only applies to --type cpp or python "
+                     f"(got --type {args.type})")
+    if args.robots and args.type not in ("cpp", "python"):
+        parser.error(f"--robots only applies to --type cpp or python "
+                     f"(got --type {args.type})")
+    if args.robots < 0:
+        parser.error(f"--robots must be >= 0 (got {args.robots})")
 
     if not re.match(r'^[a-z][a-z0-9_]*$', args.name):
         print(f"Error: Package name '{args.name}' is invalid. "

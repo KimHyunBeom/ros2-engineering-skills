@@ -14,8 +14,9 @@ Scope and limits — read before relying on this:
   whitespace variations all defeat plain regex matching. Treat any code
   path that depends on these checks for safety as broken.
 * The anti-pattern checks scan source for common ROS 2 mistakes. They skip
-  ``#`` and ``//`` single-line comments but do *not* skip Python triple-quoted
-  strings, so a docstring mentioning ``time.sleep()`` will produce a warning.
+  single-line comments (``#`` in Python, ``//`` in C/C++, both for unknown
+  extensions) but do *not* skip Python triple-quoted strings, so a
+  docstring mentioning ``time.sleep()`` will produce a warning.
   This is intentional: the hook errs on the side of false positives over
   false negatives.
 
@@ -73,35 +74,61 @@ ANTIPATTERN_CHECKS = [
         # Deprecated launch_ros kwarg — only meaningful inside a launch file.
         # Other Python code may legitimately have an attribute/kwarg of the
         # same name (e.g. a dataclass `node_executable: str = ...`).
-        'file_filter': lambda fp: fp.endswith('.launch.py'),
+        'file_filter': lambda fp: _is_launch_file(fp),
     },
     {
         'pattern': r'node_name\s*=',
         'message': 'node_name is deprecated — use name instead',
         'severity': 'warning',
-        'file_filter': lambda fp: fp.endswith('.launch.py'),
+        'file_filter': lambda fp: _is_launch_file(fp),
     },
     {
         'pattern': r'node_namespace\s*=',
         'message': 'node_namespace is deprecated — use namespace instead',
         'severity': 'warning',
-        'file_filter': lambda fp: fp.endswith('.launch.py'),
+        'file_filter': lambda fp: _is_launch_file(fp),
     },
 ]
+
+
+def _is_launch_file(filepath):
+    """Both official Python launch naming conventions."""
+    return filepath.endswith('.launch.py') or filepath.endswith('_launch.py')
+
 
 # File extensions that should be checked
 CHECKABLE_EXTENSIONS = {'.py', '.cpp', '.hpp', '.h', '.cc', '.cxx'}
 
 
-def _is_in_comment(content, pos):
+_CPP_EXTENSIONS = ('.cpp', '.hpp', '.h', '.cc', '.cxx')
+
+
+def _comment_markers(filename):
+    """Pick single-line comment markers appropriate for the file's language.
+
+    Treating ``//`` as a comment in Python would make floor division
+    (``total // 2``) suppress real matches later on the same line, so
+    Python files only honour ``#``. C/C++ files only honour ``//``
+    (``#`` starts a preprocessor directive there, which is code).
+    Unknown extensions keep the conservative both-markers behaviour.
+    """
+    if filename.endswith('.py'):
+        return ('#',)
+    if filename.endswith(_CPP_EXTENSIONS):
+        return ('//',)
+    return ('#', '//')
+
+
+def _is_in_comment(content, pos, markers=('#', '//')):
     """Heuristically check if a position falls inside a single-line comment.
 
     This reduces false positives from anti-pattern regex checks that match
     inside inline comments or docstring-style comment lines.  The heuristic
     is intentionally conservative: it only skips matches clearly inside
-    ``#`` or ``//`` comments.  It does NOT skip string literals, because
-    code like ``os.environ["ROS_LOCALHOST_ONLY"]`` is real usage even though
-    the variable name appears adjacent to quotes.
+    single-line comments (see ``_comment_markers`` for which markers apply
+    per language).  It does NOT skip string literals, because code like
+    ``os.environ["ROS_LOCALHOST_ONLY"]`` is real usage even though the
+    variable name appears adjacent to quotes.
     """
     line_start = content.rfind('\n', 0, pos) + 1
     line_end = content.find('\n', pos)
@@ -110,9 +137,9 @@ def _is_in_comment(content, pos):
     line = content[line_start:line_end]
     col = pos - line_start
 
-    # Python / C++ single-line comment: if the first #/‍/ on the line is
+    # Single-line comment: if the first marker on the line is
     # before the match position, the match is in a comment.
-    for marker in ('#', '//'):
+    for marker in markers:
         idx = line.find(marker)
         if idx != -1 and col > idx:
             # Make sure the '#' isn't inside a string on that line
@@ -140,6 +167,7 @@ def check_content(content, filename='<input>'):
     is not falsely flagged.
     """
     issues = []
+    markers = _comment_markers(filename)
     for check in ANTIPATTERN_CHECKS:
         file_filter = check.get('file_filter')
         if file_filter and not file_filter(filename):
@@ -147,7 +175,7 @@ def check_content(content, filename='<input>'):
         flags = check.get('pattern_flags', 0)
         matches = list(re.finditer(check['pattern'], content, flags))
         for match in matches:
-            if _is_in_comment(content, match.start()):
+            if _is_in_comment(content, match.start(), markers):
                 continue
             line_num = content[:match.start()].count('\n') + 1
             issues.append({
@@ -177,8 +205,12 @@ def check_file(filepath):
 # accidental literal commands like `rm -rf /`, not to defend against an
 # adversary or an LLM that knows about $IFS, $(...), or `eval`.
 DANGEROUS_COMMAND_PATTERNS = [
+    # `(?=\s|$|[;&|])` terminates a target path at whitespace, end of input,
+    # or a shell separator, so compound commands (`rm -rf /; echo done`,
+    # `rm -rf / && true`) are still caught, while longer paths under the
+    # same root (`rm -rf /var/lib/apt/lists/*`) are not.
     {
-        'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/\s*$',
+        'pattern': r'\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+|(-[a-zA-Z]+\s+)*)/(?=\s|$|[;&|])',
         'message': 'Refusing to remove root filesystem (rm -rf /)',
     },
     {
@@ -190,11 +222,16 @@ DANGEROUS_COMMAND_PATTERNS = [
         'message': 'Refusing to remove ROS installation directory',
     },
     {
-        'pattern': r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)/(usr|bin|sbin|etc|var|boot|lib|lib64)\b',
+        # Matches removal of the critical directory itself (optionally with
+        # a trailing / or /*), NOT of arbitrary subpaths beneath it.
+        'pattern': (r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)'
+                    r'/(usr|bin|sbin|etc|var|boot|lib|lib64)'
+                    r'(?:/\*)?/?(?=\s|$|[;&|])'),
         'message': 'Refusing to remove critical system directory',
     },
     {
-        'pattern': r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)(~|\$HOME)\s*(/\s*)?$',
+        'pattern': (r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+(-[a-zA-Z]+\s+)*)'
+                    r'(~|\$HOME)/?(?=\s|$|[;&|])'),
         'message': 'Refusing to remove home directory',
     },
     {
@@ -206,7 +243,8 @@ DANGEROUS_COMMAND_PATTERNS = [
         'message': 'Refusing to write directly to block device (dd)',
     },
     {
-        'pattern': r'\bchmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)777\s+/',
+        # Only the filesystem root itself (`/` or `/*`), not any absolute path.
+        'pattern': r'\bchmod\s+(-[a-zA-Z]*R[a-zA-Z]*\s+)777\s+/\*?(?=\s|$|[;&|])',
         'message': 'Refusing to recursively chmod 777 on root filesystem',
     },
     {
@@ -353,8 +391,11 @@ def main():
 
     # Normalize tool name for resilient matching across runtime variations.
     # This avoids silent bypass if the harness ever changes casing or adds
-    # prefixes (e.g. "write" vs "Write", "mcp__Write", "bash_tool").
+    # prefixes (e.g. "write" vs "Write", "mcp__server__write", "bash_tool").
     tool_name_lower = tool_name.lower().rstrip('_')
+    if tool_name_lower.startswith('mcp__'):
+        # MCP tools are named mcp__<server>__<tool>; match on the tool part.
+        tool_name_lower = tool_name_lower.split('__')[-1]
 
     # If the tool is writing or editing a file, validate the content.
     # NOTE: Claude Code uses tool names: Write, Edit, MultiEdit, NotebookEdit.

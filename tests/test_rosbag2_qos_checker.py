@@ -114,6 +114,22 @@ class TestParseYamlQoS:
         assert qos.durability == Durability.TRANSIENT_LOCAL
         assert qos.history == History.KEEP_ALL
 
+    def test_numeric_liveliness_values(self):
+        # rmw_qos_liveliness_policy_t: 1=AUTOMATIC,
+        # 2=MANUAL_BY_NODE (deprecated), 3=MANUAL_BY_TOPIC
+        from qos_checker import Liveliness
+        qos = _parse_yaml_qos({"liveliness": 1}, "auto")
+        assert qos is not None
+        assert qos.liveliness == Liveliness.AUTOMATIC
+        qos = _parse_yaml_qos({"liveliness": 3}, "topic")
+        assert qos is not None
+        assert qos.liveliness == Liveliness.MANUAL_BY_TOPIC
+        # Deprecated MANUAL_BY_NODE maps down to AUTOMATIC so a
+        # MANUAL_BY_TOPIC subscriber is still flagged incompatible.
+        qos = _parse_yaml_qos({"liveliness": 2}, "node")
+        assert qos is not None
+        assert qos.liveliness == Liveliness.AUTOMATIC
+
     def test_with_deadline_dict(self):
         qos = _parse_yaml_qos({
             "reliability": "reliable",

@@ -20,6 +20,7 @@ from skill_stop_hook import (
     validate_launch_file_syntax,
     validate_package_xml,
     find_package_xmls,
+    _git_touched_paths,
 )
 from skill_validate_hook import (
     check_content,
@@ -73,9 +74,11 @@ class TestStopHookLaunchValidation:
         launch_dir.mkdir(parents=True)
         (launch_dir / 'a.launch.py').write_text('# launch')
         (launch_dir / 'b.launch.py').write_text('# launch')
-        (tmp_path / 'not_launch.py').write_text('# not a launch')
+        # *_launch.py is the other official naming convention
+        (launch_dir / 'c_launch.py').write_text('# launch')
+        (tmp_path / 'helpers.py').write_text('# not a launch')
         files = find_generated_launch_files(str(tmp_path))
-        assert len(files) == 2
+        assert len(files) == 3
 
     def test_find_launch_files_skips_hidden(self, tmp_path):
         hidden = tmp_path / '.hidden' / 'launch'
@@ -232,6 +235,66 @@ class TestStopHookCLI:
         assert data['status'] == 'fail'
         assert data['issues_count'] >= 1
 
+    def _git(self, cwd, *args):
+        return subprocess.run(
+            ['git', '-C', str(cwd), *args],
+            capture_output=True, text=True, check=True,
+            env={**os.environ,
+                 'GIT_AUTHOR_NAME': 't', 'GIT_AUTHOR_EMAIL': 't@t',
+                 'GIT_COMMITTER_NAME': 't', 'GIT_COMMITTER_EMAIL': 't@t'},
+        )
+
+    def test_committed_broken_file_does_not_block_stop(self, tmp_path):
+        # A pre-existing broken launch file, committed and untouched by the
+        # session, must not fail the Stop hook forever.
+        (tmp_path / 'launch').mkdir()
+        (tmp_path / 'launch' / 'bad.launch.py').write_text(
+            'def wrong_name():\n    pass\n')
+        self._git(tmp_path, 'init', '-q')
+        self._git(tmp_path, 'add', '-A')
+        self._git(tmp_path, 'commit', '-qm', 'x')
+        result = subprocess.run(
+            [sys.executable,
+             os.path.join(SCRIPTS_DIR, 'skill_stop_hook.py')],
+            capture_output=True, text=True,
+            env={**os.environ, 'SKILL_WORKSPACE': str(tmp_path)},
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+
+    def test_git_touched_paths_non_repo_returns_none(self, tmp_path):
+        assert _git_touched_paths(str(tmp_path)) is None
+
+    def test_git_touched_paths_lists_modified_and_untracked(self, tmp_path):
+        (tmp_path / 'tracked.txt').write_text('v1')
+        self._git(tmp_path, 'init', '-q')
+        self._git(tmp_path, 'add', '-A')
+        self._git(tmp_path, 'commit', '-qm', 'x')
+        (tmp_path / 'tracked.txt').write_text('v2')
+        (tmp_path / 'new file.txt').write_text('n')  # quoted in porcelain
+        touched = _git_touched_paths(str(tmp_path))
+        assert touched is not None
+        assert os.path.realpath(str(tmp_path / 'tracked.txt')) in touched
+        assert os.path.realpath(str(tmp_path / 'new file.txt')) in touched
+
+    def test_untracked_broken_file_still_fails(self, tmp_path):
+        # In a git workspace, a broken file the session just created
+        # (untracked) is still validated and fails the hook.
+        self._git(tmp_path, 'init', '-q')
+        (tmp_path / 'launch').mkdir()
+        (tmp_path / 'launch' / 'new.launch.py').write_text(
+            'def wrong_name():\n    pass\n')
+        result = subprocess.run(
+            [sys.executable,
+             os.path.join(SCRIPTS_DIR, 'skill_stop_hook.py')],
+            capture_output=True, text=True,
+            env={**os.environ, 'SKILL_WORKSPACE': str(tmp_path)},
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data['status'] == 'fail'
+
     def test_output_is_valid_json(self, tmp_path):
         result = subprocess.run(
             [sys.executable,
@@ -360,6 +423,28 @@ class TestValidateHookAntiPatterns:
         issues = check_content(code, 'test.py')
         assert any('time.sleep' in i['message'] for i in issues)
 
+    def test_floor_division_not_treated_as_comment_in_python(self):
+        # `//` is floor division in Python, not a comment; a match after it
+        # on the same line must still be reported.
+        code = 'n = total // 2; time.sleep(1)\n'
+        issues = check_content(code, 'test.py')
+        assert any('time.sleep' in i['message'] for i in issues)
+
+    def test_double_slash_comment_skipped_in_cpp(self):
+        code = 'int x = 1; // calls time.sleep(1) in the python port\n'
+        issues = check_content(code, 'test.cpp')
+        assert len(issues) == 0
+
+    def test_hash_comment_skipped_in_python(self):
+        code = 'x = 1  # time.sleep(1) would be wrong here\n'
+        issues = check_content(code, 'test.py')
+        assert len(issues) == 0
+
+    def test_deprecated_kwargs_flagged_in_underscore_launch_file(self):
+        code = "node_name='talker'\n"
+        issues = check_content(code, 'robot_launch.py')
+        assert any('node_name' in i['message'] for i in issues)
+
     def test_check_file_returns_empty_for_non_checkable(self, tmp_path):
         f = tmp_path / 'test.yaml'
         f.write_text('key: value')
@@ -431,6 +516,34 @@ class TestDangerousCommandDetection:
         issues = _check_dangerous_commands('chmod -R 777 /')
         assert len(issues) >= 1
         assert any('chmod' in i['message'] for i in issues)
+
+    def test_rm_rf_system_dir_with_trailing_slash_or_star(self):
+        for cmd in ['rm -rf /usr/', 'rm -rf /var/*']:
+            issues = _check_dangerous_commands(cmd)
+            assert len(issues) >= 1, f"Should detect {cmd}"
+
+    def test_rm_rf_in_compound_command(self):
+        for cmd in ['rm -rf /; echo done', 'rm -rf / && true',
+                    'rm -rf ~ && echo gone', 'rm -rf /etc; ls']:
+            issues = _check_dangerous_commands(cmd)
+            assert len(issues) >= 1, f"Should detect {cmd}"
+
+    def test_subpaths_of_system_dirs_allowed(self):
+        # Deleting under a system root is routine (e.g. Docker apt cleanup);
+        # only removal of the root itself should be blocked.
+        for cmd in ['rm -rf /var/lib/apt/lists/*',
+                    'rm -rf /var/tmp/build_cache',
+                    'rm -rf /usr/local/share/mystuff']:
+            issues = _check_dangerous_commands(cmd)
+            assert len(issues) == 0, f"Safe command flagged: {cmd}"
+
+    def test_chmod_777_non_root_path_allowed(self):
+        issues = _check_dangerous_commands('chmod -R 777 /home/user/my_ws')
+        assert len(issues) == 0
+
+    def test_chmod_777_root_in_compound_command(self):
+        issues = _check_dangerous_commands('chmod -R 777 / && echo done')
+        assert len(issues) >= 1
 
     def test_safe_commands_pass(self):
         safe_commands = [

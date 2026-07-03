@@ -593,6 +593,10 @@ Presets: sensor, command, map, diagnostics, parameter_events, action_feedback, s
                              "(default: auto = no vendor-specific checks)")
     args = parser.parse_args()
 
+    if args.preset and (args.pub or args.sub):
+        parser.error("--preset cannot be combined with --pub/--sub: "
+                     "the preset defines both profiles")
+
     if args.preset:
         pub = PRESETS[args.preset]["pub"]
         sub = PRESETS[args.preset]["sub"]

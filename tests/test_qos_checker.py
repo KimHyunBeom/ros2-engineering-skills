@@ -342,6 +342,16 @@ class TestCLI:
         result = run_script()
         assert result.returncode != 0
 
+    def test_preset_rejects_pub_sub(self):
+        # --preset must not silently discard user-supplied profiles
+        result = run_script("--preset", "sensor", "--sub", "reliable")
+        assert result.returncode == 2
+        assert "cannot be combined" in result.stderr
+        result = run_script("--preset", "sensor",
+                            "--pub", "best_effort,volatile,keep_last,5")
+        assert result.returncode == 2
+        assert "cannot be combined" in result.stderr
+
     def test_extended_format_cli(self):
         result = run_script(
             "--pub", "reliable,volatile,keep_last,1,100,0,automatic,0",
