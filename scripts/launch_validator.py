@@ -29,10 +29,6 @@ from typing import Optional
 
 __version__ = "0.1.0"
 
-# Sentinel: a GroupAction that pushes no namespace (distinct from pushing a
-# dynamic/unresolvable one, which is represented as None).
-_NO_NAMESPACE = object()
-
 
 @dataclass
 class Issue:
@@ -78,9 +74,11 @@ class LaunchFileVisitor(ast.NodeVisitor):
         # (name, namespace, line, conditional)
         self.node_names: list[tuple[str, str, int, bool]] = []
         self.has_generate_func = False
-        # Namespaces pushed by enclosing GroupActions containing
-        # PushRosNamespace. None means the pushed namespace is dynamic
-        # (e.g. LaunchConfiguration) and cannot be resolved statically.
+        # Namespaces pushed by PushRosNamespace actions in enclosing action
+        # lists (tracked at the list literal, so lists assigned to variables
+        # and passed as GroupAction(actions=var) are scoped too). None means
+        # the pushed namespace is dynamic (e.g. LaunchConfiguration) and
+        # cannot be resolved statically.
         self._group_namespace_stack: list[Optional[str]] = []
         # Depth of enclosing GroupActions guarded by a condition= argument.
         self._condition_depth: int = 0
@@ -134,41 +132,43 @@ class LaunchFileVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _visit_group_scope(self, node: ast.Call) -> None:
-        """Visit a GroupAction's children with namespace/condition scope."""
-        pushed_ns = self._group_pushed_namespace(node)
+        """Visit a GroupAction's children tracking condition scope.
+
+        Namespace pushes are handled at the action-list level (visit_List),
+        so a list literal assigned to a variable and later passed as
+        GroupAction(actions=var) gets the same namespace scoping as an
+        inline list.
+        """
         has_condition = self._get_keyword_value(node, "condition") is not None
-        if pushed_ns is not _NO_NAMESPACE:
-            self._group_namespace_stack.append(pushed_ns)  # type: ignore[arg-type]
         if has_condition:
             self._condition_depth += 1
         self.generic_visit(node)
         if has_condition:
             self._condition_depth -= 1
-        if pushed_ns is not _NO_NAMESPACE:
-            self._group_namespace_stack.pop()
 
-    def _group_pushed_namespace(self, node: ast.Call):
-        """Return the namespace a GroupAction pushes via PushRosNamespace.
+    def visit_List(self, node: ast.List) -> None:
+        """Visit list elements applying PushRosNamespace scope.
 
-        Returns _NO_NAMESPACE if the group contains no PushRosNamespace,
-        None if it pushes a dynamic (statically unresolvable) namespace,
-        or the namespace string.
+        Mirrors launch runtime semantics: a PushRosNamespace action applies
+        to the actions that follow it in the same list. The pushed namespace
+        is popped when the list ends, so it never leaks to siblings.
         """
-        actions = self._get_keyword_value(node, "actions")
-        if actions is None and node.args:
-            actions = node.args[0]
-        if not isinstance(actions, ast.List):
-            return _NO_NAMESPACE
-        for elt in actions.elts:
-            if not (isinstance(elt, ast.Call)
+        pushes = 0
+        for elt in node.elts:
+            if (isinstance(elt, ast.Call)
                     and self._get_call_name(elt) == "PushRosNamespace"):
-                continue
-            ns_arg = elt.args[0] if elt.args else self._get_keyword_value(
-                elt, "namespace")
-            if ns_arg is None:
-                return _NO_NAMESPACE
-            return self._get_string_value(ns_arg)  # None when dynamic
-        return _NO_NAMESPACE
+                self.visit(elt)
+                ns_arg = elt.args[0] if elt.args else self._get_keyword_value(
+                    elt, "namespace")
+                if ns_arg is not None:
+                    # None entry = dynamic namespace, unresolvable statically
+                    self._group_namespace_stack.append(
+                        self._get_string_value(ns_arg))
+                    pushes += 1
+            else:
+                self.visit(elt)
+        for _ in range(pushes):
+            self._group_namespace_stack.pop()
 
     def _get_call_name(self, node: ast.Call) -> str:
         if isinstance(node.func, ast.Name):

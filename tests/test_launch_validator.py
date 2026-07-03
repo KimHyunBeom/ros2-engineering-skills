@@ -97,6 +97,52 @@ def generate_launch_description():
     ])
 """
 
+VARIABLE_ACTIONS_GROUPS = """from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch_ros.actions import Node, PushRosNamespace
+
+def generate_launch_description():
+    g1 = [
+        PushRosNamespace('robot_1'),
+        Node(package='a', executable='n', name='driver', output='screen'),
+    ]
+    g2 = [
+        PushRosNamespace('robot_2'),
+        Node(package='a', executable='n', name='driver', output='screen'),
+    ]
+    return LaunchDescription([
+        GroupAction(actions=g1),
+        GroupAction(actions=g2),
+    ])
+"""
+
+DUPLICATE_IN_VARIABLE_ACTIONS = """from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch_ros.actions import Node, PushRosNamespace
+
+def generate_launch_description():
+    g1 = [
+        PushRosNamespace('robot_1'),
+        Node(package='a', executable='n1', name='driver', output='screen'),
+        Node(package='b', executable='n2', name='driver', output='screen'),
+    ]
+    return LaunchDescription([GroupAction(actions=g1)])
+"""
+
+NODE_BEFORE_PUSH = """from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch_ros.actions import Node, PushRosNamespace
+
+def generate_launch_description():
+    return LaunchDescription([
+        Node(package='a', executable='n', name='driver', output='screen'),
+        GroupAction(actions=[
+            Node(package='b', executable='n', name='driver', output='screen'),
+            PushRosNamespace('late_ns'),
+        ]),
+    ])
+"""
+
 CONDITIONAL_NODES = """from launch import LaunchDescription
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
@@ -293,6 +339,32 @@ class TestValidateFile:
         errors = [i for i in issues if i.severity == "error"]
         assert any("Duplicate" in i.message and "robot_1" in i.message
                    for i in errors)
+
+    def test_variable_actions_lists_not_flagged_as_duplicates(self, tmp_path):
+        # actions passed as a variable (not an inline list literal) must get
+        # the same PushRosNamespace scoping as inline lists
+        path = write_launch_file(tmp_path, "var_fleet.launch.py",
+                                 VARIABLE_ACTIONS_GROUPS)
+        issues = validate_file(path)
+        assert not any("Duplicate" in i.message for i in issues)
+
+    def test_duplicate_within_variable_actions_list(self, tmp_path):
+        path = write_launch_file(tmp_path, "var_dup.launch.py",
+                                 DUPLICATE_IN_VARIABLE_ACTIONS)
+        issues = validate_file(path)
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("Duplicate" in i.message and "robot_1" in i.message
+                   for i in errors)
+
+    def test_push_only_scopes_following_actions(self, tmp_path):
+        # launch runtime applies PushRosNamespace to actions AFTER it in the
+        # list; a node before the push stays in the root namespace and does
+        # collide with a root-namespace node outside the group
+        path = write_launch_file(tmp_path, "order.launch.py",
+                                 NODE_BEFORE_PUSH)
+        issues = validate_file(path)
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("Duplicate" in i.message for i in errors)
 
     def test_conditional_nodes_not_flagged_as_duplicates(self, tmp_path):
         path = write_launch_file(tmp_path, "cond.launch.py",
