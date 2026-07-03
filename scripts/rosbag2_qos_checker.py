@@ -62,11 +62,17 @@ def _parse_yaml_qos(qos_dict: dict, label: str = "") -> Optional[QoSProfile]:
             1: History.KEEP_LAST,
             2: History.KEEP_ALL,
         }
+        # rmw_qos_liveliness_policy_t: 1=AUTOMATIC, 2=MANUAL_BY_NODE
+        # (deprecated), 3=MANUAL_BY_TOPIC. MANUAL_BY_NODE sits between
+        # AUTOMATIC and MANUAL_BY_TOPIC in RxO strictness; mapping it down
+        # to AUTOMATIC keeps the check conservative (a MANUAL_BY_TOPIC
+        # subscriber is still reported incompatible).
         liveliness_map = {
             "automatic": Liveliness.AUTOMATIC,
             "manual_by_topic": Liveliness.MANUAL_BY_TOPIC,
             1: Liveliness.AUTOMATIC,
-            2: Liveliness.MANUAL_BY_TOPIC,
+            2: Liveliness.AUTOMATIC,
+            3: Liveliness.MANUAL_BY_TOPIC,
         }
 
         reliability_val = qos_dict.get("reliability", "reliable")

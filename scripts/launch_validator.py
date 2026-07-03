@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static analysis for ROS 2 Python launch files (.launch.py only).
+"""Static analysis for ROS 2 Python launch files (*.launch.py, *_launch.py).
 
 XML (.launch.xml) and YAML (.launch.yaml) launch files are not supported.
 
@@ -28,6 +28,10 @@ from pathlib import Path
 from typing import Optional
 
 __version__ = "0.1.0"
+
+# Sentinel: a GroupAction that pushes no namespace (distinct from pushing a
+# dynamic/unresolvable one, which is represented as None).
+_NO_NAMESPACE = object()
 
 
 @dataclass
@@ -71,9 +75,14 @@ class LaunchFileVisitor(ast.NodeVisitor):
         self.filepath = filepath
         self.source = source
         self.issues: list[Issue] = []
-        self.node_names: list[tuple[str, str, int]] = []  # (name, namespace, line)
+        # (name, namespace, line, conditional)
+        self.node_names: list[tuple[str, str, int, bool]] = []
         self.has_generate_func = False
+        # Namespaces pushed by enclosing GroupActions containing
+        # PushRosNamespace. None means the pushed namespace is dynamic
+        # (e.g. LaunchConfiguration) and cannot be resolved statically.
         self._group_namespace_stack: list[Optional[str]] = []
+        # Depth of enclosing GroupActions guarded by a condition= argument.
         self._condition_depth: int = 0
         self._composable_containers: list[tuple[str, int]] = []  # (name, line)
         self._composable_nodes: list[tuple[str, int]] = []  # (plugin, line)
@@ -113,6 +122,8 @@ class LaunchFileVisitor(ast.NodeVisitor):
 
         elif func_name == "GroupAction":
             self._check_group_action(node)
+            self._visit_group_scope(node)
+            return  # children already visited with scope applied
 
         elif func_name in ("IfCondition", "UnlessCondition"):
             self._check_condition(node, func_name)
@@ -121,6 +132,43 @@ class LaunchFileVisitor(ast.NodeVisitor):
             self._check_push_ros_namespace(node)
 
         self.generic_visit(node)
+
+    def _visit_group_scope(self, node: ast.Call) -> None:
+        """Visit a GroupAction's children with namespace/condition scope."""
+        pushed_ns = self._group_pushed_namespace(node)
+        has_condition = self._get_keyword_value(node, "condition") is not None
+        if pushed_ns is not _NO_NAMESPACE:
+            self._group_namespace_stack.append(pushed_ns)  # type: ignore[arg-type]
+        if has_condition:
+            self._condition_depth += 1
+        self.generic_visit(node)
+        if has_condition:
+            self._condition_depth -= 1
+        if pushed_ns is not _NO_NAMESPACE:
+            self._group_namespace_stack.pop()
+
+    def _group_pushed_namespace(self, node: ast.Call):
+        """Return the namespace a GroupAction pushes via PushRosNamespace.
+
+        Returns _NO_NAMESPACE if the group contains no PushRosNamespace,
+        None if it pushes a dynamic (statically unresolvable) namespace,
+        or the namespace string.
+        """
+        actions = self._get_keyword_value(node, "actions")
+        if actions is None and node.args:
+            actions = node.args[0]
+        if not isinstance(actions, ast.List):
+            return _NO_NAMESPACE
+        for elt in actions.elts:
+            if not (isinstance(elt, ast.Call)
+                    and self._get_call_name(elt) == "PushRosNamespace"):
+                continue
+            ns_arg = elt.args[0] if elt.args else self._get_keyword_value(
+                elt, "namespace")
+            if ns_arg is None:
+                return _NO_NAMESPACE
+            return self._get_string_value(ns_arg)  # None when dynamic
+        return _NO_NAMESPACE
 
     def _get_call_name(self, node: ast.Call) -> str:
         if isinstance(node.func, ast.Name):
@@ -160,25 +208,31 @@ class LaunchFileVisitor(ast.NodeVisitor):
                       f"{func_name}() has no 'output' argument. "
                       f"Add output='screen' to see node logs in terminal.")
 
-        # Check for hardcoded absolute path in executable
+        # Check for hardcoded absolute path in executable (anchored at the
+        # executable= line so the regex pass can recognise it as a duplicate)
         if exec_node is not None:
             exec_str = self._get_string_value(exec_node)
             if exec_str is not None and os.path.isabs(exec_str):
-                self._add(node, "warning",
+                self._add(exec_node, "warning",
                           f"Hardcoded absolute path '{exec_str}' in 'executable'. "
                           f"Use just the executable name and let the package "
                           f"resolve the path.")
 
         # Track node names for duplicate detection
         # Also consider deprecated 'node_name' for duplicate tracking
-        # Skip duplicate check if namespace is dynamic (LaunchConfiguration etc.)
+        # Skip duplicate check if the namespace is dynamic (LaunchConfiguration
+        # etc.), either on the node itself or pushed by an enclosing group.
         deprecated_name_node = self._get_keyword_value(node, "node_name")
         effective_name_node = name_node or deprecated_name_node
         name_str = self._get_string_value(effective_name_node) if effective_name_node else None
         ns_str = self._get_string_value(ns_node) if ns_node else ""
         ns_is_dynamic = ns_node is not None and ns_str is None
-        if name_str and not ns_is_dynamic:
-            self.node_names.append((name_str, ns_str or "", node.lineno))
+        effective_ns = self._effective_namespace(ns_str or "")
+        conditional = (self._condition_depth > 0
+                       or self._get_keyword_value(node, "condition") is not None)
+        if name_str and not ns_is_dynamic and effective_ns is not None:
+            self.node_names.append(
+                (name_str, effective_ns, node.lineno, conditional))
 
         # Check for deprecated 'node_name' instead of 'name'
         if self._get_keyword_value(node, "node_name") is not None:
@@ -274,10 +328,13 @@ class LaunchFileVisitor(ast.NodeVisitor):
 
     def _check_include_launch_description(self, node: ast.Call) -> None:
         """Check IncludeLaunchDescription for file existence."""
-        if not node.args:
+        if node.args:
+            first_arg: Optional[ast.AST] = node.args[0]
+        else:
+            first_arg = self._get_keyword_value(
+                node, "launch_description_source")
+        if first_arg is None:
             return
-
-        first_arg = node.args[0]
 
         launch_path = None
         if isinstance(first_arg, ast.Call):
@@ -383,10 +440,33 @@ class LaunchFileVisitor(ast.NodeVisitor):
                 self._add(node, "warning",
                           "PushRosNamespace(''): empty namespace has no effect.")
 
+    def _effective_namespace(self, node_ns: str) -> Optional[str]:
+        """Combine group-pushed namespaces with the node's own namespace.
+
+        Returns None when an enclosing group pushes a dynamic namespace,
+        meaning the effective namespace cannot be determined statically.
+        """
+        if node_ns.startswith("/"):
+            return node_ns
+        if None in self._group_namespace_stack:
+            return None
+        parts = [ns for ns in self._group_namespace_stack if ns]
+        if node_ns:
+            parts.append(node_ns)
+        return "/".join(p.strip("/") for p in parts if p.strip("/"))
+
     def check_duplicates(self) -> None:
-        """Check for duplicate node names in the same namespace."""
+        """Check for duplicate node names in the same effective namespace.
+
+        Nodes guarded by a condition (their own condition= or an enclosing
+        conditional GroupAction) are skipped: mutually exclusive
+        IfCondition/UnlessCondition branches legitimately reuse a name and
+        cannot be proven to coexist statically.
+        """
         seen: dict[str, int] = {}
-        for name, ns, line in self.node_names:
+        for name, ns, line, conditional in self.node_names:
+            if conditional:
+                continue
             key = f"{ns}/{name}"
             if key in seen:
                 issue = Issue(
@@ -468,8 +548,15 @@ def validate_file(filepath: str) -> list[Issue]:
 
     issues.extend(visitor.issues)
 
-    # Regex-based checks
-    issues.extend(check_raw_patterns(filepath, source))
+    # Regex-based checks. The AST pass already reports hardcoded absolute
+    # executables inside Node() calls; drop the regex duplicate for those
+    # lines so a single defect is not counted twice.
+    ast_hardcoded_lines = {i.line for i in visitor.issues
+                           if "Hardcoded absolute path" in i.message}
+    issues.extend(
+        i for i in check_raw_patterns(filepath, source)
+        if not ("Hardcoded absolute executable path" in i.message
+                and i.line in ast_hardcoded_lines))
 
     return issues
 
@@ -480,7 +567,8 @@ def validate_directory(dirpath: str) -> ValidationResult:
 
     for root, _, files in os.walk(dirpath):
         for f in sorted(files):
-            if f.endswith(".launch.py"):
+            # Both official Python launch naming conventions.
+            if f.endswith(".launch.py") or f.endswith("_launch.py"):
                 filepath = os.path.join(root, f)
                 issues = validate_file(filepath)
                 result.issues.extend(issues)
@@ -492,15 +580,16 @@ def validate_directory(dirpath: str) -> ValidationResult:
 def main():
     parser = argparse.ArgumentParser(
         description="Static analysis for ROS 2 Python launch files "
-                    "(.launch.py only; XML/YAML launch files are not supported)",
+                    "(*.launch.py and *_launch.py; XML/YAML launch files "
+                    "are not supported)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
   %(prog)s src/my_robot_bringup/launch/
   %(prog)s src/my_robot_bringup/launch/robot.launch.py
-  %(prog)s .  # Check all .launch.py files recursively
+  %(prog)s .  # Check all *.launch.py / *_launch.py files recursively
 
-Note: Only Python launch files (.launch.py) are validated.
+Note: Only Python launch files (*.launch.py, *_launch.py) are validated.
       XML (.launch.xml) and YAML (.launch.yaml) files are not supported.
         """)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -530,7 +619,7 @@ Note: Only Python launch files (.launch.py) are validated.
 
     # Print results
     if result.files_checked == 0:
-        print("No *.launch.py files found.")
+        print("No *.launch.py or *_launch.py files found.")
         sys.exit(0)
 
     print(f"Checked {result.files_checked} launch file(s)")

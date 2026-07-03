@@ -5,6 +5,13 @@ This hook runs when the skill execution stops. It validates that any generated
 ROS 2 artifacts (packages, launch files, QoS configurations) conform to the
 skill's engineering principles.
 
+When the workspace is a git repository, validation is scoped to files that
+are modified or untracked according to git — i.e. plausibly touched by this
+session. A pre-existing broken launch file that is committed and untouched
+must not make every Stop fail forever in a repo the skill never modified.
+Outside a git repository (or if git is unavailable) all discovered files
+are validated, as before.
+
 Exit codes:
     0 — All checks passed
     1 — Validation issues found (reported to stdout as JSON)
@@ -12,6 +19,7 @@ Exit codes:
 
 import json
 import os
+import subprocess
 import sys
 import ast
 
@@ -39,7 +47,11 @@ def _should_skip(dirpath, workspace):
 
 
 def find_generated_launch_files(workspace):
-    """Find all .launch.py files in the workspace (depth-limited)."""
+    """Find all launch files in the workspace (depth-limited).
+
+    Matches both official Python launch naming conventions
+    (*.launch.py and *_launch.py).
+    """
     launch_files = []
     for root, dirs, files in os.walk(workspace):
         if _should_skip(root, workspace):
@@ -49,7 +61,7 @@ def find_generated_launch_files(workspace):
         dirs[:] = [d for d in dirs
                    if not d.startswith('.') and d not in _SKIP_DIRS]
         for f in files:
-            if f.endswith('.launch.py'):
+            if f.endswith('.launch.py') or f.endswith('_launch.py'):
                 launch_files.append(os.path.join(root, f))
     return launch_files
 
@@ -169,21 +181,59 @@ def _resolve_workspace():
     return os.getcwd()
 
 
+def _git_touched_paths(workspace):
+    """Return real paths of git-modified/untracked files, or None.
+
+    None means the modification set is unknown (not a git repository, git
+    missing, or git failed) — the caller then validates everything found,
+    preserving the pre-git behaviour.
+    """
+    try:
+        proc = subprocess.run(
+            ['git', '-C', workspace, 'status', '--porcelain',
+             '--untracked-files=all', '--no-renames'],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    paths = set()
+    for line in proc.stdout.splitlines():
+        # Porcelain v1: two status chars, a space, then the path
+        # (quoted if it contains special characters).
+        p = line[3:].strip()
+        if p.startswith('"') and p.endswith('"'):
+            p = p[1:-1]
+        if p:
+            paths.add(os.path.realpath(os.path.join(workspace, p)))
+    return paths
+
+
 def main():
     workspace = _resolve_workspace()
     all_issues = []
 
-    # Validate launch files
-    for lf in find_generated_launch_files(workspace):
+    launch_files = find_generated_launch_files(workspace)
+    package_xmls = find_package_xmls(workspace)
+
+    # Scope validation to files this session plausibly touched (see module
+    # docstring). Unknown modification set -> validate everything.
+    touched = _git_touched_paths(workspace)
+    if touched is not None:
+        launch_files = [f for f in launch_files
+                        if os.path.realpath(f) in touched]
+        package_xmls = [f for f in package_xmls
+                        if os.path.realpath(f) in touched]
+
+    for lf in launch_files:
         all_issues.extend(validate_launch_file_syntax(lf))
 
-    # Validate package.xml files
-    for px in find_package_xmls(workspace):
+    for px in package_xmls:
         all_issues.extend(validate_package_xml(px))
 
     result = {
         'hook': 'ros2-engineering-skills:stop',
-        'version': '1.0.0',
+        'version': '1.1.0',
         'issues_count': len(all_issues),
         'issues': all_issues,
         'status': 'fail' if any(
@@ -201,8 +251,8 @@ def main():
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'status': result['status'],
             'issues_count': result['issues_count'],
-            'launch_files_checked': len(find_generated_launch_files(workspace)),
-            'package_xmls_checked': len(find_package_xmls(workspace)),
+            'launch_files_checked': len(launch_files),
+            'package_xmls_checked': len(package_xmls),
             'error_summaries': [
                 i['message'] for i in all_issues if i['severity'] == 'error'
             ][:5],  # keep log concise

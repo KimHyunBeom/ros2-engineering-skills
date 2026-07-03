@@ -66,6 +66,67 @@ def generate_launch_description():
     ])
 """
 
+NAMESPACED_GROUPS = """from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch_ros.actions import Node, PushRosNamespace
+
+def generate_launch_description():
+    return LaunchDescription([
+        GroupAction(actions=[
+            PushRosNamespace('robot_1'),
+            Node(package='a', executable='n', name='driver', output='screen'),
+        ]),
+        GroupAction(actions=[
+            PushRosNamespace('robot_2'),
+            Node(package='a', executable='n', name='driver', output='screen'),
+        ]),
+    ])
+"""
+
+DUPLICATE_IN_SAME_GROUP = """from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch_ros.actions import Node, PushRosNamespace
+
+def generate_launch_description():
+    return LaunchDescription([
+        GroupAction(actions=[
+            PushRosNamespace('robot_1'),
+            Node(package='a', executable='n1', name='driver', output='screen'),
+            Node(package='b', executable='n2', name='driver', output='screen'),
+        ]),
+    ])
+"""
+
+CONDITIONAL_NODES = """from launch import LaunchDescription
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+def generate_launch_description():
+    use_sim = LaunchConfiguration('use_sim')
+    return LaunchDescription([
+        Node(package='sim', executable='sim_driver', name='driver',
+             output='screen', condition=IfCondition(use_sim)),
+        Node(package='real', executable='real_driver', name='driver',
+             output='screen', condition=UnlessCondition(use_sim)),
+    ])
+"""
+
+DYNAMIC_GROUP_NAMESPACE = """from launch import LaunchDescription
+from launch.actions import GroupAction
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node, PushRosNamespace
+
+def generate_launch_description():
+    return LaunchDescription([
+        GroupAction(actions=[
+            PushRosNamespace(LaunchConfiguration('ns')),
+            Node(package='a', executable='n', name='driver', output='screen'),
+        ]),
+        Node(package='b', executable='n', name='driver', output='screen'),
+    ])
+"""
+
 DEPRECATED_KEYWORDS = """from launch import LaunchDescription
 from launch_ros.actions import Node
 
@@ -219,6 +280,32 @@ class TestValidateFile:
         errors = [i for i in issues if i.severity == "error"]
         assert any("Duplicate" in i.message for i in errors)
 
+    def test_same_name_in_different_group_namespaces_ok(self, tmp_path):
+        path = write_launch_file(tmp_path, "fleet.launch.py",
+                                 NAMESPACED_GROUPS)
+        issues = validate_file(path)
+        assert not any("Duplicate" in i.message for i in issues)
+
+    def test_duplicate_within_same_group_namespace(self, tmp_path):
+        path = write_launch_file(tmp_path, "dup_group.launch.py",
+                                 DUPLICATE_IN_SAME_GROUP)
+        issues = validate_file(path)
+        errors = [i for i in issues if i.severity == "error"]
+        assert any("Duplicate" in i.message and "robot_1" in i.message
+                   for i in errors)
+
+    def test_conditional_nodes_not_flagged_as_duplicates(self, tmp_path):
+        path = write_launch_file(tmp_path, "cond.launch.py",
+                                 CONDITIONAL_NODES)
+        issues = validate_file(path)
+        assert not any("Duplicate" in i.message for i in issues)
+
+    def test_dynamic_group_namespace_skips_duplicate_check(self, tmp_path):
+        path = write_launch_file(tmp_path, "dyn.launch.py",
+                                 DYNAMIC_GROUP_NAMESPACE)
+        issues = validate_file(path)
+        assert not any("Duplicate" in i.message for i in issues)
+
     def test_deprecated_keywords_warned(self, tmp_path):
         path = write_launch_file(tmp_path, "dep.launch.py", DEPRECATED_KEYWORDS)
         issues = validate_file(path)
@@ -298,7 +385,13 @@ class TestValidateDirectory:
 
     def test_ignores_non_launch_files(self, tmp_path):
         write_launch_file(tmp_path, "a.launch.py", VALID_LAUNCH)
-        (tmp_path / "not_a_launch.py").write_text("print('hello')")
+        (tmp_path / "helpers.py").write_text("print('hello')")
+        result = validate_directory(str(tmp_path))
+        assert result.files_checked == 1
+
+    def test_finds_underscore_launch_files(self, tmp_path):
+        # *_launch.py is the other official Python launch naming convention
+        write_launch_file(tmp_path, "robot_launch.py", VALID_LAUNCH)
         result = validate_directory(str(tmp_path))
         assert result.files_checked == 1
 
@@ -385,6 +478,19 @@ from launch.actions import IncludeLaunchDescription
 def generate_launch_description():
     return LaunchDescription([
         IncludeLaunchDescription('/nonexistent/path.launch.py'),
+    ])
+"""
+
+INCLUDE_LAUNCH_KWARG = """from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+
+def generate_launch_description():
+    return LaunchDescription([
+        IncludeLaunchDescription(
+            launch_description_source=PythonLaunchDescriptionSource(
+                '/nonexistent/kwarg.launch.py')
+        ),
     ])
 """
 
@@ -488,6 +594,23 @@ class TestAdditionalVisitors:
         issues = validate_file(path)
         warnings = [i for i in issues if i.severity == "warning"]
         assert any("not found" in i.message for i in warnings)
+
+    def test_include_launch_kwarg_form_missing(self, tmp_path):
+        path = write_launch_file(tmp_path, "inc_kw.launch.py",
+                                 INCLUDE_LAUNCH_KWARG)
+        issues = validate_file(path)
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("not found" in i.message for i in warnings)
+
+    def test_hardcoded_executable_reported_once(self, tmp_path):
+        # AST and regex passes both detect this; only one issue should remain
+        path = write_launch_file(tmp_path, "exec1.launch.py",
+                                 HARDCODED_EXECUTABLE)
+        issues = validate_file(path)
+        hardcoded = [i for i in issues
+                     if "Hardcoded" in i.message
+                     and "executable" in i.message.lower()]
+        assert len(hardcoded) == 1
 
     def test_composable_container_missing_package(self, tmp_path):
         path = write_launch_file(tmp_path, "cont.launch.py",
