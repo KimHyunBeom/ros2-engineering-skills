@@ -259,6 +259,29 @@ evals:
     timeout: 70000
     tags: [ros2_control, hardware_interface, serial, lifecycle]
 
+  - name: system-bringup
+    description: >
+      Validates that the skill designs a headless robot bringup with persistent
+      udev device naming, ordered systemd units, a topic-level watchdog, and
+      graph-level boot health verification.
+    prompt: prompts/system-bringup.md
+    expected: expected/system-bringup.md
+    criteria:
+      - id: udev-persistent-naming
+        description: "Must write udev rules with SYMLINK for persistent device naming"
+        weight: 1.0
+      - id: systemd-ordering
+        description: "Must order systemd units with After/Wants on network-online.target"
+        weight: 1.0
+      - id: heartbeat-watchdog
+        description: "Must design a heartbeat watchdog using DEADLINE or LIVELINESS QoS events"
+        weight: 1.0
+      - id: boot-health-check
+        description: "Must verify bringup health at the graph level (node list, topic data flow)"
+        weight: 0.8
+    timeout: 60000
+    tags: [bringup, udev, systemd, watchdog, deployment]
+
 # Parity test configuration for deprecation assessment
 parity_test:
   enabled: true
