@@ -142,6 +142,15 @@ evals:
       - "Must restrict publish permission on safety topics to the supervisor enclave via SROS2"
       - "Must keep a hardware e-stop chain — software stop is not safety-rated"
     timeout: 60000
+  - name: sensor-integration
+    prompt: evals/prompts/sensor-integration.md
+    expected: evals/expected/sensor-integration.md
+    criteria:
+      - "Must configure LiDAR and camera drivers with sensor-data QoS and correct frame_id"
+      - "Must synchronize sensor clocks with PTP or chrony and verify with ros2 topic delay"
+      - "Must use tf2_ros MessageFilter to synchronize processing with transform availability"
+      - "Must calibrate LiDAR-camera extrinsics and verify by re-projection"
+    timeout: 60000
 ---
 
 # ROS 2 Engineering Skills
@@ -200,6 +209,7 @@ time and what issues were found — check it to avoid repeating past mistakes.
 | Nav2, SLAM, costmaps, behavior trees              | `references/navigation.md`       |
 | MoveIt 2, planning scene, grasp pipelines         | `references/manipulation.md`     |
 | Camera, LiDAR, PCL, cv_bridge, depth processing   | `references/perception.md`       |
+| Sensor drivers, clock sync, LiDAR-camera extrinsics | `references/sensor-integration.md` |
 | Unit tests, integration tests, launch_testing, CI | `references/testing.md`          |
 | ros2 doctor, tracing, profiling, rosbag2, CLI cheat sheet | `references/debugging.md` |
 | Docker, cross-compile, fleet deployment, OTA      | `references/deployment.md`       |
@@ -212,10 +222,9 @@ time and what issues were found — check it to avoid repeating past mistakes.
 | Message types, units, covariance, frame conventions | `references/message-types.md`    |
 | ROS 1 migration, ros1_bridge, hybrid operation    | `references/migration-ros1.md`   |
 
-**Cross-cutting concerns:** Security, error handling, and QoS are not isolated to
-single reference files — apply them whenever the data path crosses a trust boundary,
-a node owns hardware, or communication reliability matters. Use your judgment about
-which cross-cutting concerns apply to the user's specific situation.
+**Cross-cutting concerns:** Security, error handling, and QoS are not isolated to single
+reference files — use your judgment and apply them whenever the data path crosses a
+trust boundary, a node owns hardware, or communication reliability matters.
 
 ## Core engineering principles
 

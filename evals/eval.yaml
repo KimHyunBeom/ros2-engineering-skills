@@ -305,6 +305,30 @@ evals:
     timeout: 60000
     tags: [safety, estop, sros2, qos, twist_mux]
 
+  - name: sensor-integration
+    description: >
+      Validates that the skill integrates real camera/LiDAR hardware: sensor-data
+      QoS and optical frames, PTP/chrony clock sync, tf2 MessageFilter
+      synchronization, and LiDAR-camera extrinsic calibration with re-projection
+      verification.
+    prompt: prompts/sensor-integration.md
+    expected: expected/sensor-integration.md
+    criteria:
+      - id: driver-qos-frames
+        description: "Must configure LiDAR and camera drivers with sensor-data QoS and correct frame_id"
+        weight: 1.0
+      - id: clock-sync
+        description: "Must synchronize sensor clocks with PTP or chrony and verify with ros2 topic delay"
+        weight: 1.0
+      - id: tf2-message-filter
+        description: "Must use tf2_ros MessageFilter to synchronize processing with transform availability"
+        weight: 1.0
+      - id: extrinsic-calibration
+        description: "Must calibrate LiDAR-camera extrinsics and verify by re-projection"
+        weight: 0.8
+    timeout: 60000
+    tags: [sensors, lidar, camera, calibration, tf2, time-sync]
+
 # Parity test configuration for deprecation assessment
 parity_test:
   enabled: true
