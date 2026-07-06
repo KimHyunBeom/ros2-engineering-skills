@@ -133,6 +133,15 @@ evals:
       - "Must design a heartbeat watchdog using DEADLINE or LIVELINESS QoS events"
       - "Must verify bringup health at the graph level (node list, topic data flow)"
     timeout: 60000
+  - name: estop-safety
+    prompt: evals/prompts/estop-safety.md
+    expected: evals/expected/estop-safety.md
+    criteria:
+      - "Must design a fail-safe e-stop heartbeat with DEADLINE QoS (silence stops the robot)"
+      - "Must arbitrate command topics through twist_mux with an e-stop lock priority"
+      - "Must restrict publish permission on safety topics to the supervisor enclave via SROS2"
+      - "Must keep a hardware e-stop chain — software stop is not safety-rated"
+    timeout: 60000
 ---
 
 # ROS 2 Engineering Skills
@@ -197,6 +206,7 @@ time and what issues were found — check it to avoid repeating past mistakes.
 | System bringup, udev rules, boot sequence, watchdogs | `references/system-bringup.md` |
 | Gazebo, Isaac Sim, sim-to-real, use_sim_time      | `references/simulation.md`       |
 | SROS2, DDS security, certificates, supply chain   | `references/security.md`         |
+| E-stop, safety chains, command arbitration        | `references/safety-estop.md`     |
 | micro-ROS, MCU/RTOS, XRCE-DDS, rclc              | `references/micro-ros.md`        |
 | Multi-robot fleet, Open-RMF, DDS discovery scale  | `references/multi-robot.md`      |
 | Message types, units, covariance, frame conventions | `references/message-types.md`    |

@@ -282,6 +282,29 @@ evals:
     timeout: 60000
     tags: [bringup, udev, systemd, watchdog, deployment]
 
+  - name: estop-safety
+    description: >
+      Validates that the skill designs a fail-safe software e-stop: heartbeat
+      with DEADLINE QoS, twist_mux command arbitration, SROS2 isolation of the
+      safety topics, and latched reset semantics alongside a hardware chain.
+    prompt: prompts/estop-safety.md
+    expected: expected/estop-safety.md
+    criteria:
+      - id: failsafe-heartbeat
+        description: "Must design a fail-safe e-stop heartbeat with DEADLINE QoS (silence stops the robot)"
+        weight: 1.0
+      - id: command-arbitration
+        description: "Must arbitrate command topics through twist_mux with an e-stop lock priority"
+        weight: 1.0
+      - id: sros2-isolation
+        description: "Must restrict publish permission on safety topics to the supervisor enclave via SROS2"
+        weight: 1.0
+      - id: hardware-chain
+        description: "Must keep a hardware e-stop chain — software stop is not safety-rated"
+        weight: 0.8
+    timeout: 60000
+    tags: [safety, estop, sros2, qos, twist_mux]
+
 # Parity test configuration for deprecation assessment
 parity_test:
   enabled: true
