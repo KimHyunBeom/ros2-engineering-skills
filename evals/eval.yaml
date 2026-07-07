@@ -259,6 +259,76 @@ evals:
     timeout: 70000
     tags: [ros2_control, hardware_interface, serial, lifecycle]
 
+  - name: system-bringup
+    description: >
+      Validates that the skill designs a headless robot bringup with persistent
+      udev device naming, ordered systemd units, a topic-level watchdog, and
+      graph-level boot health verification.
+    prompt: prompts/system-bringup.md
+    expected: expected/system-bringup.md
+    criteria:
+      - id: udev-persistent-naming
+        description: "Must write udev rules with SYMLINK for persistent device naming"
+        weight: 1.0
+      - id: systemd-ordering
+        description: "Must order systemd units with After/Wants on network-online.target"
+        weight: 1.0
+      - id: heartbeat-watchdog
+        description: "Must design a heartbeat watchdog using DEADLINE or LIVELINESS QoS events"
+        weight: 1.0
+      - id: boot-health-check
+        description: "Must verify bringup health at the graph level (node list, topic data flow)"
+        weight: 0.8
+    timeout: 60000
+    tags: [bringup, udev, systemd, watchdog, deployment]
+
+  - name: estop-safety
+    description: >
+      Validates that the skill designs a fail-safe software e-stop: heartbeat
+      with DEADLINE QoS, twist_mux command arbitration, SROS2 isolation of the
+      safety topics, and latched reset semantics alongside a hardware chain.
+    prompt: prompts/estop-safety.md
+    expected: expected/estop-safety.md
+    criteria:
+      - id: failsafe-heartbeat
+        description: "Must design a fail-safe e-stop heartbeat with DEADLINE QoS (silence stops the robot)"
+        weight: 1.0
+      - id: command-arbitration
+        description: "Must arbitrate command topics through twist_mux with an e-stop lock priority"
+        weight: 1.0
+      - id: sros2-isolation
+        description: "Must restrict publish permission on safety topics to the supervisor enclave via SROS2"
+        weight: 1.0
+      - id: hardware-chain
+        description: "Must keep a hardware e-stop chain — software stop is not safety-rated"
+        weight: 0.8
+    timeout: 60000
+    tags: [safety, estop, sros2, qos, twist_mux]
+
+  - name: sensor-integration
+    description: >
+      Validates that the skill integrates real camera/LiDAR hardware: sensor-data
+      QoS and optical frames, PTP/chrony clock sync, tf2 MessageFilter
+      synchronization, and LiDAR-camera extrinsic calibration with re-projection
+      verification.
+    prompt: prompts/sensor-integration.md
+    expected: expected/sensor-integration.md
+    criteria:
+      - id: driver-qos-frames
+        description: "Must configure LiDAR and camera drivers with sensor-data QoS and correct frame_id"
+        weight: 1.0
+      - id: clock-sync
+        description: "Must synchronize sensor clocks with PTP or chrony and verify with ros2 topic delay"
+        weight: 1.0
+      - id: tf2-message-filter
+        description: "Must use tf2_ros MessageFilter to synchronize processing with transform availability"
+        weight: 1.0
+      - id: extrinsic-calibration
+        description: "Must calibrate LiDAR-camera extrinsics and verify by re-projection"
+        weight: 0.8
+    timeout: 60000
+    tags: [sensors, lidar, camera, calibration, tf2, time-sync]
+
 # Parity test configuration for deprecation assessment
 parity_test:
   enabled: true
