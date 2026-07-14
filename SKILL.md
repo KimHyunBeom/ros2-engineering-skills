@@ -12,10 +12,16 @@ description: >
 context: fork
 classification: capability
 category: api-reference
-version: 1.1.0
+version: 1.2.0
 deprecation-risk: medium
+# The hooks block below is Claude Code-specific: the hook schema, the
+# ${CLAUDE_PLUGIN_ROOT} path variable, and the tool-name matcher are not
+# part of the Agent Skills standard. Other platforms (Codex, Cursor,
+# Gemini CLI) ignore this block — see "Platform support" in the body for
+# the manual fallback.
 hooks:
   PreToolUse:
+    # Matcher = Claude Code's file-mutation and shell tools.
     - matcher: "Edit|Write|MultiEdit|Bash"
       hooks:
         - type: command
@@ -26,131 +32,7 @@ hooks:
         - type: command
           command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/skill_stop_hook.py"
           timeout: 15000
-evals:
-  - name: qos-compatibility-analysis
-    prompt: evals/prompts/qos-compatibility.md
-    expected: evals/expected/qos-compatibility.md
-    criteria:
-      - "Must correctly identify QoS incompatibility between BEST_EFFORT publisher and RELIABLE subscriber"
-      - "Must explain DDS RxO (Request-vs-Offered) semantics"
-      - "Must suggest switching subscriber to BEST_EFFORT or publisher to RELIABLE"
-    timeout: 60000
-  - name: package-scaffolding
-    prompt: evals/prompts/package-creation.md
-    expected: evals/expected/package-creation.md
-    criteria:
-      - "Must generate valid ROS 2 package with correct directory structure"
-      - "Must follow snake_case naming conventions"
-      - "Must include lifecycle node support for C++ packages"
-      - "Must declare all dependencies in package.xml"
-    timeout: 60000
-  - name: launch-file-review
-    prompt: evals/prompts/launch-validation.md
-    expected: evals/expected/launch-validation.md
-    criteria:
-      - "Must detect missing generate_launch_description function"
-      - "Must flag deprecated keywords (node_executable, node_name)"
-      - "Must warn about hardcoded paths"
-      - "Must identify duplicate node names"
-    timeout: 60000
-  - name: lifecycle-node-design
-    prompt: evals/prompts/lifecycle-design.md
-    expected: evals/expected/lifecycle-design.md
-    criteria:
-      - "Must recommend lifecycle node for hardware driver"
-      - "Must describe state transitions (unconfigured → inactive → active)"
-      - "Must include error handling with on_error callback"
-      - "Must implement safe shutdown in on_deactivate"
-    timeout: 60000
-  - name: rosbag2-playback-qos
-    prompt: evals/prompts/rosbag2-playback.md
-    expected: evals/expected/rosbag2-playback.md
-    criteria:
-      - "Must parse rosbag2 metadata for QoS profiles"
-      - "Must identify TRANSIENT_LOCAL playback issues"
-      - "Must recommend --read-ahead-queue-size for large bags"
-    timeout: 60000
-  - name: sros2-security-config
-    prompt: evals/prompts/sros2-security.md
-    expected: evals/expected/sros2-security.md
-    criteria:
-      - "Must generate correct SROS2 keystore and enclave CLI commands"
-      - "Must set ROS_SECURITY_STRATEGY=Enforce for production"
-      - "Must apply least-privilege policy for safety_monitor (subscribe-only except /e_stop)"
-      - "Must configure all three DDS security plugins"
-    timeout: 60000
-  - name: multi-robot-fleet-design
-    prompt: evals/prompts/multi-robot-fleet.md
-    expected: evals/expected/multi-robot-fleet.md
-    criteria:
-      - "Must address DDS discovery isolation between robots"
-      - "Must define namespace strategy with per-robot prefixes"
-      - "Must handle tf frame conventions for multi-robot (frame_prefix)"
-      - "Must describe fleet manager communication pattern"
-    timeout: 60000
-  - name: micro-ros-firmware-design
-    prompt: evals/prompts/micro-ros-firmware.md
-    expected: evals/expected/micro-ros-firmware.md
-    criteria:
-      - "Must use rclc API correctly (not rclcpp/rclpy)"
-      - "Must configure static memory allocation (no dynamic malloc in publish loop)"
-      - "Must include XRCE-DDS agent setup and connection parameters"
-      - "Must handle agent disconnection with reconnection strategy"
-    timeout: 60000
-  - name: python-package-scaffolding
-    prompt: evals/prompts/python-package.md
-    expected: evals/expected/python-package.md
-    criteria:
-      - "Must generate valid ament_python package with setup.py and resource marker"
-      - "Must use qos_profile_sensor_data for sensor subscriptions"
-      - "Must declare parameters with typed defaults"
-      - "Must include Python launch file with parameter loading"
-    timeout: 60000
-  - name: nav2-stack-configuration
-    prompt: evals/prompts/nav2-configuration.md
-    expected: evals/expected/nav2-configuration.md
-    criteria:
-      - "Must configure AMCL with correct robot model and laser model"
-      - "Must configure costmaps with correct layers and robot footprint"
-      - "Must set DWB controller velocity limits matching robot specs"
-      - "Must configure recovery behaviors (spin, backup, wait)"
-    timeout: 70000
-  - name: ros2-control-hardware-interface
-    prompt: evals/prompts/ros2-control-hardware.md
-    expected: evals/expected/ros2-control-hardware.md
-    criteria:
-      - "Must implement SystemInterface with read/write/export methods"
-      - "Must implement lifecycle callbacks (on_configure, on_activate, on_deactivate)"
-      - "Must handle serial failures with return_type::ERROR"
-      - "Must include correct URDF ros2_control tag and controller config"
-    timeout: 70000
-  - name: system-bringup
-    prompt: evals/prompts/system-bringup.md
-    expected: evals/expected/system-bringup.md
-    criteria:
-      - "Must write udev rules with SYMLINK for persistent device naming"
-      - "Must order systemd units with After/Wants on network-online.target"
-      - "Must design a heartbeat watchdog using DEADLINE or LIVELINESS QoS events"
-      - "Must verify bringup health at the graph level (node list, topic data flow)"
-    timeout: 60000
-  - name: estop-safety
-    prompt: evals/prompts/estop-safety.md
-    expected: evals/expected/estop-safety.md
-    criteria:
-      - "Must design a fail-safe e-stop heartbeat with DEADLINE QoS (silence stops the robot)"
-      - "Must arbitrate command topics through twist_mux with an e-stop lock priority"
-      - "Must restrict publish permission on safety topics to the supervisor enclave via SROS2"
-      - "Must keep a hardware e-stop chain — software stop is not safety-rated"
-    timeout: 60000
-  - name: sensor-integration
-    prompt: evals/prompts/sensor-integration.md
-    expected: evals/expected/sensor-integration.md
-    criteria:
-      - "Must configure LiDAR and camera drivers with sensor-data QoS and correct frame_id"
-      - "Must synchronize sensor clocks with PTP or chrony and verify with ros2 topic delay"
-      - "Must use tf2_ros MessageFilter to synchronize processing with transform availability"
-      - "Must calibrate LiDAR-camera extrinsics and verify by re-projection"
-    timeout: 60000
+# Eval definitions live in evals/eval.yaml (single source of truth).
 ---
 
 # ROS 2 Engineering Skills
@@ -161,38 +43,41 @@ evals:
 > data analysis, or deployment automation — those are separate skill categories.
 
 A progressive-disclosure skill for ROS 2 development — from first workspace to
-production fleet deployment. Each section below gives you the essential decision
-framework; detailed patterns, code templates, and anti-patterns live in the
-`references/` directory. Read the relevant reference file before writing code.
+production fleet deployment. Detailed patterns and code templates live in
+`references/`; read the relevant file before writing code.
 
 ## How to use this skill
 
-**Progressive disclosure — do NOT read everything at once.**
-This skill is structured in layers. Only load what you need for the current task:
-
-1. **This file (SKILL.md)** — always loaded. Contains decision routing, core
-   principles, pitfalls, and anti-patterns. Sufficient for answering quick
-   questions and making architectural decisions.
-2. **`references/*.md`** — load on demand. Use the Decision Router below to
-   pick the 1–2 files relevant to the user's current task. Do NOT read all 20
-   reference files — that wastes context and causes confusion.
-3. **`scripts/`** — run only when the user needs code generation, QoS checking,
-   or launch validation. These are tools, not reading material.
+**Progressive disclosure — do NOT read everything at once.** This always-loaded
+file carries routing, core principles, pitfalls, and anti-patterns; that is
+enough for quick questions and architectural decisions. `references/*.md` load
+on demand — use the Decision Router to pick the 1–2 files matching the task,
+never all of them. `scripts/` are tools to run (scaffolding, QoS checking,
+launch validation), not reading material.
 
 **Steps:**
 
-1. If `.skill-runs.log` exists in the workspace, read the last few lines to
-   understand what was done and what issues occurred in previous sessions.
-2. Identify what the user is building (see Decision Router below).
-3. Read **only** the matching `references/*.md` file(s) for detailed guidance.
-4. Check the **AI pitfalls** table before generating any code.
-5. Apply the Core Engineering Principles in every artifact you produce.
-6. When multiple domains intersect (e.g. Nav2 + ros2_control), read both files
+1. Identify what the user is building (see Decision Router below).
+2. Read **only** the matching `references/*.md` file(s) for detailed guidance.
+3. Check the **AI pitfalls** table before generating any code.
+4. Apply the Core Engineering Principles in every artifact you produce.
+5. When multiple domains intersect (e.g. Nav2 + ros2_control), read both files
    but favor safety > determinism > simplicity when recommendations conflict.
 
-**Execution log:** The Stop hook automatically appends a session summary to
-`.skill-runs.log` in the workspace. This lets you see what was validated last
-time and what issues were found — check it to avoid repeating past mistakes.
+**Execution log (opt-in):** When the Stop hook runs (Claude Code only) *and*
+the `SKILL_RUNS_LOG` environment variable is set, a session summary is
+appended to `.skill-runs.log`. If that file exists in the workspace, read the
+last few lines to avoid repeating past mistakes. Without the opt-in — and on
+platforms without hooks — the file is never created, so a read-only session
+leaves the working tree untouched.
+
+**Platform support:** `SKILL.md` and `references/` are platform-neutral
+knowledge documents. `scripts/` can be run manually on any platform whose
+environment has Python and the repository dependencies. The hook wiring
+(automatic execution) and `.skill-runs.log` are Claude Code-specific; on
+other platforms run the validators manually from the skill root:
+`SKILL_WORKSPACE=<dir> python3 scripts/skill_stop_hook.py` and
+`python3 scripts/skill_validate_hook.py`.
 
 ## Decision router
 
@@ -261,54 +146,27 @@ Pin the exact distro in Dockerfile, CI, and documentation so builds are reproduc
 ### 2. C++ vs Python decision
 
 Choose the language based on the node's role, not personal preference.
-
-**Use rclcpp (C++) when:**
-
-- The node sits in a control loop running ≥100 Hz
-- Deterministic memory allocation matters (real-time path)
-- The node is a hardware driver or controller plugin
-- Intra-process zero-copy communication is required
-
-**Use rclpy (Python) when:**
-
-- The node is orchestration, monitoring, or parameter management
-- Rapid prototyping with frequent iteration
-- Heavy use of ML frameworks (PyTorch, TensorFlow) that are Python-native
-- The node does not sit in a latency-critical path
+**rclcpp (C++)**: control loops ≥100 Hz, deterministic memory allocation
+(real-time path), hardware drivers and controller plugins, intra-process
+zero-copy. **rclpy (Python)**: orchestration, monitoring, parameter
+management, rapid prototyping, Python-native ML frameworks — anything off
+the latency-critical path.
 
 **Mixed stacks are normal.** A typical robot has C++ drivers/controllers and Python
 orchestration/monitoring. Note: `component_container` (composition) only loads
 C++ components via pluginlib. Python nodes run as separate processes, but can
 share a launch file and communicate via zero-overhead intra-host DDS.
-
-**Intra-process communication** works for any nodes sharing a process — not only
-composable components. Any nodes instantiated in the same process with
-`use_intra_process_comms(true)` can use zero-copy transfer.
+Intra-process zero-copy works for any nodes sharing a process with
+`use_intra_process_comms(true)` — not only composable components.
 
 ### 3. Package structure conventions
 
-Every package should follow this layout. Consistency across a workspace reduces
-onboarding time and makes CI scripts portable.
-
-```text
-my_package/
-├── CMakeLists.txt          # or setup.py for pure Python
-├── package.xml             # format 3, with <depend> tags
-├── config/
-│   └── params.yaml         # default parameters
-├── launch/
-│   └── bringup.launch.py   # Python launch file
-├── include/my_package/     # C++ public headers (if library)
-├── src/                    # C++ source files
-├── my_package/             # Python modules (if ament_python or mixed)
-├── test/                   # gtest, pytest, launch_testing
-├── urdf/                   # URDF/xacro (if applicable)
-├── msg/ srv/ action/       # custom interfaces (dedicated _interfaces package preferred)
-└── README.md
-```
-
-Separate interface definitions into a `*_interfaces` package so downstream
-packages can depend on interfaces without pulling in implementation.
+Follow the standard layout — `package.xml` (format 3, explicit `<depend>`
+tags), `config/params.yaml`, `launch/*.launch.py`, `src/` +
+`include/<pkg>/` for C++ or `<pkg>/` for Python, and `test/`. Keep custom
+msg/srv/action definitions in a dedicated `*_interfaces` package so
+downstream packages can depend on interfaces without the implementation.
+Full annotated layout: `references/workspace-build.md`.
 
 ### 4. Parameter discipline
 
@@ -387,37 +245,14 @@ stale data). See `references/communication.md` section 9 for full API and exampl
 ### 9. Lifecycle-first design
 
 Default to lifecycle (managed) nodes for anything that owns resources:
-hardware drivers, sensor pipelines, planners, controllers.
-
-```text
-                 ┌──────────────┐
-  create() ──►  │  Unconfigured │
-                 └──────┬───────┘
-            on_configure │
-                 ┌──────▼───────┐
-                 │   Inactive    │
-                 └──────┬───────┘
-            on_activate  │
-                 ┌──────▼───────┐
-                 │    Active     │
-                 └──────┬───────┘
-           on_deactivate │
-                 ┌──────▼───────┐
-                 │   Inactive    │
-                 └──────┬───────┘
-            on_cleanup   │
-                 ┌──────▼───────┐
-                 │  Unconfigured │
-                 └──────┬───────┘
-           on_shutdown   │
-                 ┌──────▼───────┐
-                 │   Finalized   │
-                 └───────────────┘
-```
-
-This gives the system manager (launch file, orchestrator, or operator) explicit
-control over when resources are allocated, when the node starts processing,
-and how it shuts down. It also makes error recovery predictable.
+hardware drivers, sensor pipelines, planners, controllers. The managed
+state machine (`unconfigured → inactive → active`, with `cleanup`,
+`shutdown`, and error transitions) gives the system manager explicit
+control over when resources are allocated, when processing starts, and how
+shutdown proceeds — and makes error recovery predictable. Configure-only
+transitions also enable hardware-safe config validation
+(`references/testing.md` section 4). Full state diagram and callbacks:
+`references/lifecycle-components.md`.
 
 ### 10. Build and CI hygiene
 
@@ -429,6 +264,25 @@ and how it shuts down. It also makes error recovery predictable.
 - Pin rosdep keys in `rosdep.yaml` for reproducible dependency resolution.
 - Cache `/opt/ros/`, `.ccache/`, and `build/`/`install/` in CI to cut build
   times by 60–80%.
+
+### 11. Source-first behavior verification
+
+Distro labels are not enough when exact behavior matters — patch releases
+change parameter names, plugin behavior, and defaults. Before asserting how
+an installed stack behaves, identify the installed version (`ros2 pkg xml`,
+`dpkg-query -W`) and read what ships with it: reference configs, headers,
+and the source tag matching that version. Worked Nav2 procedure:
+`references/navigation.md` section 6.
+
+### 12. Motion-safety defaults
+
+Never generate configs that can move an unvalidated robot. Motion
+recoveries (Spin/BackUp) stay opt-in until robot geometry, locomotion
+response, and clearance are validated — actuation-free recovery comes
+first. Velocity limits come from the safe operational ceiling, never the
+SDK/API maximum. For hardware checks, prefer configure-only lifecycle
+validation with hardware isolation (`references/testing.md` section 4).
+Details: `references/navigation.md` sections 7 and 10.
 
 ## Common anti-patterns
 
@@ -469,6 +323,8 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 | 10 | Generating `rospy` / `roscpp` code instead of `rclpy` / `rclcpp` | ROS 1 patterns in a ROS 2 context — nothing compiles | This skill is ROS 2 only — always use `rclpy`/`rclcpp` APIs |
 | 11 | Ignoring `use_sim_time` parameter in simulation | Real clock diverges from Gazebo clock — tf lookups fail, controllers drift | Set `use_sim_time:=true` in launch and pass `--clock` to `ros2 bag play` |
 | 12 | Publishing before subscribers connect (no TRANSIENT_LOCAL) | First N messages lost — map, URDF, or initial config never received | Use `TRANSIENT_LOCAL` durability for latched-style data, or publish in `on_activate` with a startup delay |
+| 13 | Writing Nav2 names from memory (`recoveries_server`/`nav2_recoveries/` on Humble, pre-Galactic `default_bt_xml_filename`) | Parameters silently ignored or plugin loading fails at configure | Humble+ uses `behavior_server`/`nav2_behaviors/` and `default_nav_to_pose_bt_xml`; verify against the installed version (Principle 11) |
+| 14 | Enabling Spin/BackUp recoveries by default on an unvalidated robot | Robot suddenly rotates or reverses in the field — the recovery, not path following, is at fault | Motion recoveries are opt-in after validation; actuation-free recovery first (Principle 12) |
 
 > **Maintenance rule:** When you encounter a new AI failure pattern while using this
 > skill, append it to this table with the next sequential number. The pitfall list
@@ -480,13 +336,16 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 When upgrading between distributions, check these breaking changes first:
 
 - **Foxy → Humble:** complete API overhaul (lifecycle, actions stabilized in Humble);
-  `ros2_control` was not bundled in Foxy. Plan a rework, not a port.
+  `ros2_control` was not bundled in Foxy; Nav2 renamed `recoveries_server` →
+  `behavior_server` and `nav2_recoveries/` → `nav2_behaviors/` (Galactic → Humble
+  migration — pre-Humble recovery naming does not exist on Humble). Plan a rework,
+  not a port.
 - **Humble → Jazzy:** `ros2_control` 2.x → 4.x — interface exports auto-generated,
   `get_value()` → `get_optional<T>()`, spawner uses `--param-file`, all `<ros2_control>`
   joints must exist in the URDF (details: `references/hardware-interface.md`); default
   bag format sqlite3 → **MCAP** (`storage_id='mcap'`); `ROS_AUTOMATIC_DISCOVERY_RANGE`
-  replaces `ROS_LOCALHOST_ONLY`; Nav2 `recoveries_server` → `behavior_server`;
-  `launch_ros` parameter handling changed — retest launch files.
+  replaces `ROS_LOCALHOST_ONLY`; `launch_ros` parameter handling changed — retest
+  launch files.
 - **Jazzy → Kilted (non-LTS):** Zenoh Tier 1 (`RMW_IMPLEMENTATION=rmw_zenoh_cpp`);
   EventsExecutor stable in rclcpp and rclpy; `ament_target_dependencies()` deprecated —
   use `target_link_libraries()` with modern CMake targets; Gazebo pairing is **Ionic**
