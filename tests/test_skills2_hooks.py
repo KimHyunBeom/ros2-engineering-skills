@@ -20,7 +20,11 @@ from skill_stop_hook import (
     validate_launch_file_syntax,
     validate_package_xml,
     find_package_xmls,
+    find_yaml_files,
+    validate_nav2_yaml,
+    _distro_at_least,
     _git_touched_paths,
+    _resolve_log_path,
 )
 from skill_validate_hook import (
     check_content,
@@ -1273,3 +1277,253 @@ class TestResolveWorkspaceDirect:
         monkeypatch.setattr('sys.stdin', io.StringIO(''))
         assert os.path.realpath(_resolve_workspace()) == os.path.realpath(
             str(tmp_path))
+
+
+class TestStopHookRunsLogOptIn:
+    """.skill-runs.log is opt-in via SKILL_RUNS_LOG.
+
+    Without the opt-in the Stop hook must never write into the workspace —
+    a read-only session that triggers the hook must leave the working tree
+    exactly as it found it.
+    """
+
+    HOOK = os.path.join(SCRIPTS_DIR, 'skill_stop_hook.py')
+
+    def _run(self, workspace, env_extra=None):
+        env = os.environ.copy()
+        env.pop('SKILL_RUNS_LOG', None)
+        env['SKILL_WORKSPACE'] = str(workspace)
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, self.HOOK],
+            capture_output=True, text=True, env=env,
+            stdin=subprocess.DEVNULL)
+
+    def test_no_log_written_by_default(self, tmp_path):
+        result = self._run(tmp_path)
+        assert result.returncode == 0
+        assert not (tmp_path / '.skill-runs.log').exists()
+
+    def test_default_run_does_not_dirty_git_worktree(self, tmp_path):
+        subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+
+        def porcelain():
+            return subprocess.run(
+                ['git', '-C', str(tmp_path), 'status', '--porcelain'],
+                capture_output=True, text=True).stdout
+
+        before = porcelain()
+        result = self._run(tmp_path)
+        assert result.returncode == 0
+        assert porcelain() == before
+
+    def test_log_written_when_opted_in(self, tmp_path):
+        result = self._run(tmp_path, {'SKILL_RUNS_LOG': '1'})
+        assert result.returncode == 0
+        log = tmp_path / '.skill-runs.log'
+        assert log.exists()
+        entry = json.loads(log.read_text(encoding='utf-8').splitlines()[0])
+        assert entry['status'] == 'pass'
+        assert 'yaml_files_checked' in entry
+
+    def test_log_written_to_custom_absolute_path(self, tmp_path):
+        state_dir = tmp_path / 'agent-state'
+        state_dir.mkdir()
+        log = state_dir / 'runs.log'
+        result = self._run(tmp_path, {'SKILL_RUNS_LOG': str(log)})
+        assert result.returncode == 0
+        assert log.exists()
+        # Nothing landed in the workspace itself.
+        assert not (tmp_path / '.skill-runs.log').exists()
+
+    def test_missing_parent_directory_never_fails_the_hook(self, tmp_path):
+        bogus = tmp_path / 'no' / 'such' / 'dir' / 'runs.log'
+        result = self._run(tmp_path, {'SKILL_RUNS_LOG': str(bogus)})
+        # Logging is best-effort: a bad destination must not fail validation.
+        assert result.returncode == 0
+        assert not bogus.exists()
+
+    def test_resolve_unset_returns_none(self, monkeypatch):
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        assert _resolve_log_path('/ws') is None
+
+    def test_resolve_blank_returns_none(self, monkeypatch):
+        monkeypatch.setenv('SKILL_RUNS_LOG', '   ')
+        assert _resolve_log_path('/ws') is None
+
+    def test_resolve_truthy_uses_workspace_default(self, monkeypatch):
+        for truthy in ('1', 'true', 'YES'):
+            monkeypatch.setenv('SKILL_RUNS_LOG', truthy)
+            assert _resolve_log_path('/ws') == os.path.join(
+                '/ws', '.skill-runs.log')
+
+    def test_resolve_relative_path_joins_workspace(self, monkeypatch):
+        monkeypatch.setenv('SKILL_RUNS_LOG', os.path.join('logs', 'r.log'))
+        assert _resolve_log_path('/ws') == os.path.join(
+            '/ws', 'logs', 'r.log')
+
+
+class TestDistroOrdering:
+    """_distro_at_least uses the explicit order table, never string compare."""
+
+    def test_equal_boundary(self):
+        assert _distro_at_least('humble', 'humble') is True
+
+    def test_newer_than_boundary(self):
+        assert _distro_at_least('jazzy', 'humble') is True
+        assert _distro_at_least('iron', 'humble') is True
+
+    def test_older_than_boundary(self):
+        assert _distro_at_least('galactic', 'humble') is False
+        assert _distro_at_least('foxy', 'galactic') is False
+
+    def test_unknown_distro_is_none(self):
+        assert _distro_at_least('rolling', 'humble') is None
+        assert _distro_at_least('quixotic', 'humble') is None
+
+    def test_unset_is_none(self):
+        assert _distro_at_least(None, 'humble') is None
+        assert _distro_at_least('', 'humble') is None
+
+    def test_case_and_whitespace_tolerant(self):
+        assert _distro_at_least(' Humble ', 'humble') is True
+
+
+class TestStopHookNav2YamlLint:
+    """Distro-aware lint for Nav2 parameter YAML: syntax + legacy names.
+
+    The two legacy identifiers have DIFFERENT distro boundaries and must be
+    classified separately: recovery naming changed in Humble, the BT
+    navigator parameter changed in Galactic.
+    """
+
+    _LEGACY_RECOVERY = (
+        'recoveries_server:\n'
+        '  ros__parameters:\n'
+        '    recovery_plugins: ["spin"]\n'
+        '    spin:\n'
+        '      plugin: "nav2_recoveries/Spin"\n'
+    )
+    _LEGACY_BT_PARAM = (
+        'bt_navigator:\n'
+        '  ros__parameters:\n'
+        '    default_bt_xml_filename: "my_bt.xml"\n'
+    )
+
+    def test_legacy_recovery_naming_flagged_on_humble(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY, encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+        assert 'pre-Humble recovery naming' in issues[0]['message']
+
+    def test_legacy_recovery_naming_valid_on_galactic(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'galactic')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY, encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_pre_galactic_bt_param_flagged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_BT_PARAM, encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+        assert 'pre-Galactic BT navigator parameter' in issues[0]['message']
+
+    def test_pre_galactic_bt_param_valid_on_foxy(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'foxy')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_BT_PARAM, encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_unknown_distro_adds_confirm_note(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('ROS_DISTRO', raising=False)
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY, encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert 'confirm the target distro' in issues[0]['message']
+
+    def test_boundaries_classified_separately(self, tmp_path, monkeypatch):
+        """On Galactic the recovery naming is fine but the BT parameter is
+        already legacy — the two advisories must not share a boundary."""
+        monkeypatch.setenv('ROS_DISTRO', 'galactic')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY + self._LEGACY_BT_PARAM,
+                     encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert 'pre-Galactic BT navigator parameter' in issues[0]['message']
+
+    def test_syntax_error_flagged_for_nav2_named_file(self, tmp_path):
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text('foo: [unclosed\n', encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'YAML syntax error' in issues[0]['message']
+
+    def test_syntax_error_skipped_for_unrelated_file(self, tmp_path):
+        f = tmp_path / 'random_config.yaml'
+        f.write_text('foo: [unclosed\n', encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_non_nav2_yaml_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'ci.yaml'
+        f.write_text('jobs:\n  build:\n    steps: []\n', encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_commented_legacy_names_not_flagged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(
+            '# recoveries_server / nav2_recoveries/ was pre-Humble naming\n'
+            'behavior_server:\n'
+            '  ros__parameters:\n'
+            '    behavior_plugins: ["wait"]\n'
+            '    wait:\n'
+            '      plugin: "nav2_behaviors/Wait"\n',
+            encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_modern_humble_config_clean(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(
+            'bt_navigator:\n'
+            '  ros__parameters:\n'
+            '    default_nav_to_pose_bt_xml: "my_bt.xml"\n'
+            'behavior_server:\n'
+            '  ros__parameters:\n'
+            '    behavior_plugins: ["wait", "spin", "backup"]\n'
+            '    wait:\n'
+            '      plugin: "nav2_behaviors/Wait"\n'
+            '    spin:\n'
+            '      plugin: "nav2_behaviors/Spin"\n'
+            '    backup:\n'
+            '      plugin: "nav2_behaviors/BackUp"\n',
+            encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_nonexistent_file_returns_no_issues(self):
+        assert validate_nav2_yaml('/nonexistent/nav2_params.yaml') == []
+
+    def test_find_yaml_files(self, tmp_path):
+        (tmp_path / 'a.yaml').write_text('x: 1\n', encoding='utf-8')
+        (tmp_path / 'b.yml').write_text('y: 2\n', encoding='utf-8')
+        (tmp_path / 'c.txt').write_text('z\n', encoding='utf-8')
+        build = tmp_path / 'build'
+        build.mkdir()
+        (build / 'skip.yaml').write_text('n: 0\n', encoding='utf-8')
+        found = find_yaml_files(str(tmp_path))
+        names = sorted(os.path.basename(p) for p in found)
+        assert names == ['a.yaml', 'b.yml']
