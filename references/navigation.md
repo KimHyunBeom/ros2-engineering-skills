@@ -63,7 +63,8 @@
 | BehaviorTree.CPP version | v3 | v3 → v4 transition (XML port remapping syntax changed) | v4 |
 | `cmd_vel` message type | `geometry_msgs/Twist` | `Twist` (default), `TwistStamped` opt-in via `enable_stamped_cmd_vel: true` | **`TwistStamped` default**; set `enable_stamped_cmd_vel: false` for backward compat |
 | Behavior server | `behavior_server` + `behavior_plugins` (**renamed in Humble** — pre-Humble used `recoveries_server` + `recovery_plugins`) | `behavior_server` (same as Humble) | `behavior_server` (same as Humble) |
-| Behavior plugin namespace | `nav2_behaviors/` (**renamed in Humble** — pre-Humble used `nav2_recoveries/`) | `nav2_behaviors/` | `nav2_behaviors/` |
+| Behavior plugin namespace | `nav2_behaviors/` (**renamed in Humble** — pre-Humble used `nav2_recoveries/`) | `nav2_behaviors::` | `nav2_behaviors::` |
+| Plugin type separator | `/` for most types, e.g. `nav2_behaviors/Spin` on Humble/Iron (some, like `dwb_core::DWBLocalPlanner`, already used `::`) | **`::` everywhere on Jazzy+**, e.g. `nav2_behaviors::Spin` (Iron and older use `/`) | `::` |
 | Docking server | Not available | **New**: `docking_server` | Enhanced: non-charging docks, RViz panel |
 | Route server | Not available | Not available | **New**: graph-based route planning |
 | Loopback simulator | Not available | Not available | **New**: `nav2_loopback_sim` (no Gazebo needed) |
@@ -395,6 +396,13 @@ ls "$(ros2 pkg prefix nav2_bt_navigator)/share/nav2_bt_navigator/behavior_trees/
 
 ## 5. Planner and controller plugins
 
+**Plugin type separator:** Nav2 parameter files should use `::` in plugin
+type strings on Jazzy and newer. Iron and older configurations may use `/`;
+some plugin types, such as `dwb_core::DWBLocalPlanner`, already used `::` on
+older distributions. Copying a `/`-style string into a Jazzy+ config (or the
+reverse) fails at plugin load — verify against the installed
+`nav2_params.yaml` (source-first, section 6).
+
 ### Planner plugins
 
 | Plugin | Algorithm | Best for |
@@ -410,6 +418,7 @@ planner_server:
   ros__parameters:
     planner_plugins: ["GridBased"]
     GridBased:
+      # Humble/Iron syntax; Jazzy+ uses "nav2_navfn_planner::NavfnPlanner"
       plugin: "nav2_navfn_planner/NavfnPlanner"
       tolerance: 0.5
       use_astar: true
@@ -557,13 +566,13 @@ behavior_server:
   ros__parameters:
     behavior_plugins: ["wait", "spin", "backup"]
     wait:
-      plugin: "nav2_behaviors/Wait"
+      plugin: "nav2_behaviors/Wait"    # Humble/Iron; Jazzy+: "nav2_behaviors::Wait"
     # Motion behaviors: declare them, but keep them out of your BT's
     # recovery sequence until validated on the actual robot (see below).
     spin:
-      plugin: "nav2_behaviors/Spin"
+      plugin: "nav2_behaviors/Spin"    # Humble/Iron; Jazzy+: "nav2_behaviors::Spin"
     backup:
-      plugin: "nav2_behaviors/BackUp"
+      plugin: "nav2_behaviors/BackUp"  # Humble/Iron; Jazzy+: "nav2_behaviors::BackUp"
 ```
 
 ### Recovery escalation ladder — actuation-free first

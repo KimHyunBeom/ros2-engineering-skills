@@ -73,7 +73,54 @@ class TestNav2RecoveryNaming:
         assert 'behavior_server:' in content, (
             'navigation.md must show a behavior_server config example')
         assert 'nav2_behaviors/Spin' in content, (
-            'navigation.md must use the nav2_behaviors/ plugin namespace')
+            'navigation.md must document the Humble/Iron plugin syntax')
+
+
+class TestPluginTypeSeparator:
+    """Nav2 plugin type strings use `/` on Humble/Iron and `::` on Jazzy+
+    (some types like dwb_core::DWBLocalPlanner already used `::` earlier).
+    Both syntaxes must stay documented, and each occurrence must sit in the
+    right distro context — string presence alone would pass even if the
+    syntaxes were attributed to the wrong distros."""
+
+    _WINDOW = 3
+
+    def _occurrence_windows(self, path, needle):
+        lines = _lines(path)
+        for idx, line in enumerate(lines):
+            if needle in line:
+                lo = max(0, idx - self._WINDOW)
+                hi = min(len(lines), idx + self._WINDOW + 1)
+                yield idx + 1, '\n'.join(lines[lo:hi])
+
+    def test_humble_slash_syntax_in_humble_context(self):
+        found = False
+        for lineno, window in self._occurrence_windows(
+                NAVIGATION_MD, 'nav2_behaviors/Spin'):
+            found = True
+            assert re.search(r'Humble|Iron|older', window, re.IGNORECASE), (
+                f'navigation.md:{lineno} shows the / plugin syntax without '
+                f'Humble/Iron context'
+            )
+        assert found, 'navigation.md must document nav2_behaviors/Spin'
+
+    def test_jazzy_double_colon_syntax_in_jazzy_context(self):
+        found = False
+        for lineno, window in self._occurrence_windows(
+                NAVIGATION_MD, 'nav2_behaviors::Spin'):
+            found = True
+            assert re.search(r'Jazzy|newer', window, re.IGNORECASE), (
+                f'navigation.md:{lineno} shows the :: plugin syntax without '
+                f'Jazzy+ context'
+            )
+        assert found, 'navigation.md must document nav2_behaviors::Spin'
+
+    def test_jazzy_expected_uses_modern_plugin_separator(self):
+        """The nav2 eval prompt targets Jazzy — its expected answer must use
+        the :: types and carry no /-style behavior plugin strings."""
+        content = _read(NAV2_EXPECTED)
+        assert 'nav2_behaviors::Spin' in content
+        assert 'nav2_behaviors/Spin' not in content
 
 
 class TestBtNavigatorParameter:

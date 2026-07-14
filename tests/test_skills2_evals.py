@@ -896,7 +896,8 @@ Set the DWB controller velocity limits from the operational speed limits
 for the site (max_vel_x: 0.5, max_vel_theta: 1.0), not the hardware
 maximum (1.2 m/s, 2.0 rad/s) — the SDK range is a clamp, not a target.
 
-Configure the behavior server recoveries with nav2_behaviors/ plugins.
+Configure the behavior server recoveries with the Jazzy plugin types
+nav2_behaviors::Wait, nav2_behaviors::Spin and nav2_behaviors::BackUp.
 Motion behaviors (spin, backup) are gated on validated robot geometry and
 clearance at the stuck locations, preferring actuation-free recovery
 first (wait, targeted costmap clearing) when unvalidated. Costmap

@@ -32,8 +32,9 @@
   on the package default BT (typically
   `navigate_to_pose_w_replanning_and_recovery.xml`; verify against the
   installed `nav2_bt_navigator` share directory rather than from memory)
-- Must configure the `behavior_server` with `nav2_behaviors/` plugins
-  (wait, spin, backup)
+- Must configure the `behavior_server` using Jazzy plugin types such as
+  `nav2_behaviors::Wait`, `nav2_behaviors::Spin`, and `nav2_behaviors::BackUp`
+  (Iron and older distributions use `/` instead of `::`)
 - Must gate motion recoveries (spin, backup) on validated robot geometry
   and clearance, preferring actuation-free recovery (wait, targeted costmap
   clearing) first when unvalidated
