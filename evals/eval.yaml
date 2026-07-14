@@ -9,7 +9,7 @@
 #   - token_count: approximate tokens consumed
 
 skill: ros2-engineering-skills
-version: 1.1.0
+version: 1.2.0
 classification: capability
 deprecation-risk: medium
 
@@ -212,7 +212,7 @@ evals:
   - name: nav2-stack-configuration
     description: >
       Validates that the skill correctly configures the Nav2 navigation stack
-      with AMCL, costmaps, DWB controller, and behavior tree recovery.
+      with AMCL, costmaps, DWB controller, and safety-gated recovery behaviors.
     prompt: prompts/nav2-configuration.md
     expected: expected/nav2-configuration.md
     criteria:
@@ -223,10 +223,10 @@ evals:
         description: "Must configure global and local costmaps with correct layers and robot footprint"
         weight: 1.0
       - id: controller-params
-        description: "Must set DWB controller velocity limits matching robot specs"
+        description: "Must set DWB controller velocity limits from the operational speed limits, not the hardware maximum"
         weight: 0.8
       - id: recovery-behaviors
-        description: "Must configure recovery behaviors (spin, backup, wait)"
+        description: "Must configure behavior server recoveries with motion behaviors gated on validated clearance, preferring actuation-free recovery first"
         weight: 0.8
       - id: launch-file
         description: "Must provide a launch file with map argument and use_sim_time"
