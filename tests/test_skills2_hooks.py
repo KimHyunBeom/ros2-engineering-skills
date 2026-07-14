@@ -878,7 +878,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', '')
         monkeypatch.setenv('TOOL_INPUT', '')
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_write_clean(self, monkeypatch):
@@ -890,7 +890,7 @@ class TestValidateHookMainDirect:
             'content': 'import rclpy\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_write_antipattern(self, monkeypatch):
@@ -902,7 +902,7 @@ class TestValidateHookMainDirect:
             'content': 'time.sleep(5)\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0  # Warnings don't block
 
     def test_main_edit_antipattern(self, monkeypatch):
@@ -914,7 +914,7 @@ class TestValidateHookMainDirect:
             'new_string': 'global node_ref\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_bash_dangerous(self, monkeypatch):
@@ -925,7 +925,7 @@ class TestValidateHookMainDirect:
             'command': 'rm -rf /opt/ros',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 1
 
     def test_main_bash_safe(self, monkeypatch):
@@ -936,7 +936,7 @@ class TestValidateHookMainDirect:
             'command': 'colcon build',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_bash_invalid_json(self, monkeypatch):
@@ -945,7 +945,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', 'Bash')
         monkeypatch.setenv('TOOL_INPUT', 'not json')
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_write_no_content(self, monkeypatch):
@@ -956,7 +956,7 @@ class TestValidateHookMainDirect:
             'file_path': 'test.py',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_invalid_json_write(self, monkeypatch):
@@ -965,7 +965,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', 'Write')
         monkeypatch.setenv('TOOL_INPUT', '{bad json')
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
 
@@ -1527,3 +1527,105 @@ class TestStopHookNav2YamlLint:
         found = find_yaml_files(str(tmp_path))
         names = sorted(os.path.basename(p) for p in found)
         assert names == ['a.yaml', 'b.yml']
+
+
+class TestValidateHookManualCLI:
+    """--file/--command manual mode: no event payload needed, and named
+    inputs must never produce a false pass (missing/unreadable files are
+    errors, not silent skips)."""
+
+    HOOK = os.path.join(SCRIPTS_DIR, 'skill_validate_hook.py')
+
+    def _run(self, *args):
+        env = os.environ.copy()
+        env.pop('TOOL_NAME', None)
+        env.pop('TOOL_INPUT', None)
+        return subprocess.run(
+            [sys.executable, self.HOOK, *args],
+            capture_output=True, text=True, env=env,
+            stdin=subprocess.DEVNULL, timeout=10)
+
+    def test_missing_file_is_error_not_skip(self, tmp_path):
+        # A nonexistent .txt path must be reported missing, not
+        # misclassified as an unsupported-extension skip.
+        missing = tmp_path / 'missing.txt'
+        result = self._run('--file', str(missing))
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data['mode'] == 'manual'
+        assert data['status'] == 'fail'
+        assert any('File not found' in i['message'] for i in data['issues'])
+        assert data['checks_skipped'] == []
+
+    def test_directory_is_error(self, tmp_path):
+        result = self._run('--file', str(tmp_path))
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert any('regular file' in i['message'] for i in data['issues'])
+
+    def test_unsupported_extension_is_skipped_not_failed(self, tmp_path):
+        f = tmp_path / 'notes.md'
+        f.write_text('time.sleep(1)\n', encoding='utf-8')
+        result = self._run('--file', str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+        assert data['issues'] == []
+        assert len(data['checks_skipped']) == 1
+        assert 'unsupported extension' in data['checks_skipped'][0]
+
+    def test_antipattern_file_warns_but_passes(self, tmp_path):
+        f = tmp_path / 'node.py'
+        f.write_text('import time\ntime.sleep(1)\n', encoding='utf-8')
+        result = self._run('--file', str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+        assert any('time.sleep' in i['message'] for i in data['issues'])
+        assert all(i['severity'] == 'warning' for i in data['issues'])
+
+    def test_undecodable_file_is_error(self, tmp_path):
+        f = tmp_path / 'binary.py'
+        f.write_bytes(b'\xff\xfe\x00\x01binary')
+        result = self._run('--file', str(f))
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert any('Cannot read file' in i['message'] for i in data['issues'])
+
+    def test_dangerous_command_fails(self):
+        result = self._run('--command', 'rm -rf /')
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data['mode'] == 'manual'
+        assert data['status'] == 'fail'
+        assert any(i['severity'] == 'error' for i in data['issues'])
+
+    def test_safe_command_passes(self):
+        result = self._run('--command', 'ros2 topic list')
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+        assert data['issues'] == []
+
+    def test_file_and_command_are_aggregated(self, tmp_path):
+        # One bad file must not stop the scan: the remaining file and the
+        # command are still checked and everything lands in one report.
+        good = tmp_path / 'node.py'
+        good.write_text('time.sleep(1)\n', encoding='utf-8')
+        missing = tmp_path / 'gone.py'
+        result = self._run('--file', str(missing), str(good),
+                           '--command', 'rm -rf /')
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        messages = [i['message'] for i in data['issues']]
+        assert any('File not found' in m for m in messages)
+        assert any('time.sleep' in m for m in messages)
+        assert any('Refusing' in m for m in messages)
+
+    def test_no_args_stays_in_event_mode(self):
+        result = self._run()
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['mode'] == 'event'
+        assert data['status'] == 'pass'
+        assert data['checks_skipped'] == []

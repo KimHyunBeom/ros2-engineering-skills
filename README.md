@@ -144,9 +144,18 @@ block in `SKILL.md` frontmatter is ignored: nothing runs automatically and
 (Python 3.10+; the YAML lint additionally needs PyYAML):
 
 ```bash
+# Manual workspace validation (launch files, package.xml, Nav2 YAML lint)
 SKILL_WORKSPACE=/path/to/your/workspace python3 scripts/skill_stop_hook.py
-python3 scripts/skill_validate_hook.py
+
+# Manual anti-pattern / dangerous-command checks.
+# The quoted command is inspected only; it is never executed.
+python3 scripts/skill_validate_hook.py --file src/my_node.py
+python3 scripts/skill_validate_hook.py --command 'rm -rf /'        # status: fail, exit 1
+python3 scripts/skill_validate_hook.py --command 'ros2 topic list'  # status: pass, exit 0
 ```
+
+Without `--file`/`--command`, `skill_validate_hook.py` expects a Claude Code
+PreToolUse payload on stdin — it is not a workspace-scanning CLI in that mode.
 
 ### Cursor
 

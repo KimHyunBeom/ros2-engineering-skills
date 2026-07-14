@@ -77,7 +77,10 @@ environment has Python and the repository dependencies. The hook wiring
 (automatic execution) and `.skill-runs.log` are Claude Code-specific; on
 other platforms run the validators manually from the skill root:
 `SKILL_WORKSPACE=<dir> python3 scripts/skill_stop_hook.py` and
-`python3 scripts/skill_validate_hook.py`.
+`python3 scripts/skill_validate_hook.py --file <src> / --command '<cmd>'`
+(the command string is inspected only, never executed; without those flags
+the validate hook expects a Claude Code PreToolUse payload and checks
+nothing on its own).
 
 ## Decision router
 
