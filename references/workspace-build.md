@@ -40,8 +40,11 @@ ros2_ws/
 
 ### Per-package layout
 
-Every package should follow this layout. Consistency across a workspace
-reduces onboarding time and makes CI scripts portable.
+Typical full layout — include only the entries that apply. Consistency
+across a workspace reduces onboarding time and makes CI scripts portable.
+Pure `ament_python` packages have `setup.py` instead of `CMakeLists.txt`
+and no `include/`; interface-only packages carry little beyond
+`package.xml`, `CMakeLists.txt`, and `msg/`/`srv/`/`action/`.
 
 ```text
 my_package/
