@@ -38,6 +38,34 @@ ros2_ws/
 - Driver packages isolate hardware deps — other packages stay testable without hardware
 - Bringup packages contain only launch and config — change robot configuration without recompiling
 
+### Per-package layout
+
+Typical full layout — include only the entries that apply. Consistency
+across a workspace reduces onboarding time and makes CI scripts portable.
+Pure `ament_python` packages have `setup.py` instead of `CMakeLists.txt`
+and no `include/`; interface-only packages carry little beyond
+`package.xml`, `CMakeLists.txt`, and `msg/`/`srv/`/`action/`.
+
+```text
+my_package/
+├── CMakeLists.txt          # or setup.py for pure Python
+├── package.xml             # format 3, with <depend> tags
+├── config/
+│   └── params.yaml         # default parameters
+├── launch/
+│   └── bringup.launch.py   # Python launch file
+├── include/my_package/     # C++ public headers (if library)
+├── src/                    # C++ source files
+├── my_package/             # Python modules (if ament_python or mixed)
+├── test/                   # gtest, pytest, launch_testing
+├── urdf/                   # URDF/xacro (if applicable)
+├── msg/ srv/ action/       # custom interfaces (dedicated _interfaces package preferred)
+└── README.md
+```
+
+Separate interface definitions into a `*_interfaces` package so downstream
+packages can depend on interfaces without pulling in implementation.
+
 ## 2. colcon essentials
 
 ### Build commands

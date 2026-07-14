@@ -7,10 +7,14 @@ These tests ensure the skill conforms to Skills 2.0 requirements:
 4. version follows semver
 5. hooks are properly declared
 6. evals are properly structured
+7. every release-version surface carries the same version
 """
 
+import json
 import os
 import re
+import subprocess
+import sys
 
 import yaml
 
@@ -218,52 +222,70 @@ class TestSkills2FrontmatterHooks:
 
 
 class TestSkills2FrontmatterEvals:
-    """Validate that evals are properly declared in frontmatter."""
+    """Eval definitions live in evals/eval.yaml — the single source of truth.
+
+    Earlier revisions duplicated all eval definitions in SKILL.md
+    frontmatter. The copies drifted (flat string criteria vs weighted
+    criteria with ids/tags) and cost ~125 lines of always-loaded context.
+    These tests validate the canonical eval.yaml and pin the removal of the
+    frontmatter duplicate.
+    """
 
     def setup_method(self):
-        self.fm = _parse_frontmatter(SKILL_MD)
+        eval_yaml = os.path.join(SKILL_ROOT, 'evals', 'eval.yaml')
+        with open(eval_yaml, 'r', encoding='utf-8') as fh:
+            self.config = yaml.safe_load(fh)
+        self.evals_dir = os.path.join(SKILL_ROOT, 'evals')
+
+    def test_skill_md_frontmatter_has_no_evals(self):
+        """Regression: eval definitions must not reappear in SKILL.md."""
+        fm = _parse_frontmatter(SKILL_MD)
+        assert 'evals' not in fm, (
+            'SKILL.md frontmatter must not duplicate eval definitions — '
+            'evals/eval.yaml is the single source of truth'
+        )
 
     def test_has_evals(self):
-        assert 'evals' in self.fm, 'Skills 2.0 requires evals field'
-        assert isinstance(self.fm['evals'], list)
-        assert len(self.fm['evals']) > 0
+        assert 'evals' in self.config, 'eval.yaml requires evals field'
+        assert isinstance(self.config['evals'], list)
+        assert len(self.config['evals']) > 0
 
     def test_evals_have_required_fields(self):
-        for i, ev in enumerate(self.fm['evals']):
+        for i, ev in enumerate(self.config['evals']):
             assert 'name' in ev, f'Eval {i} missing "name"'
             assert 'prompt' in ev, f'Eval {i} missing "prompt"'
             assert 'expected' in ev, f'Eval {i} missing "expected"'
             assert 'criteria' in ev, f'Eval {i} missing "criteria"'
 
     def test_eval_names_are_unique(self):
-        names = [ev['name'] for ev in self.fm['evals']]
+        names = [ev['name'] for ev in self.config['evals']]
         assert len(names) == len(set(names)), (
             f'Eval names must be unique, found duplicates: '
             f'{[n for n in names if names.count(n) > 1]}'
         )
 
     def test_eval_prompt_files_exist(self):
-        for ev in self.fm['evals']:
-            prompt_path = os.path.join(SKILL_ROOT, ev['prompt'])
+        for ev in self.config['evals']:
+            prompt_path = os.path.join(self.evals_dir, ev['prompt'])
             assert os.path.isfile(prompt_path), (
                 f'Eval "{ev["name"]}" prompt file not found: {prompt_path}'
             )
 
     def test_eval_expected_files_exist(self):
-        for ev in self.fm['evals']:
-            expected_path = os.path.join(SKILL_ROOT, ev['expected'])
+        for ev in self.config['evals']:
+            expected_path = os.path.join(self.evals_dir, ev['expected'])
             assert os.path.isfile(expected_path), (
                 f'Eval "{ev["name"]}" expected file not found: {expected_path}'
             )
 
     def test_eval_criteria_are_non_empty(self):
-        for ev in self.fm['evals']:
+        for ev in self.config['evals']:
             assert len(ev['criteria']) > 0, (
                 f'Eval "{ev["name"]}" must have at least one criterion'
             )
 
     def test_eval_timeouts_are_positive(self):
-        for ev in self.fm['evals']:
+        for ev in self.config['evals']:
             assert 'timeout' in ev, (
                 f'Eval "{ev["name"]}" should have a timeout'
             )
@@ -271,8 +293,8 @@ class TestSkills2FrontmatterEvals:
             assert ev['timeout'] > 0
 
     def test_eval_prompt_files_are_non_empty(self):
-        for ev in self.fm['evals']:
-            prompt_path = os.path.join(SKILL_ROOT, ev['prompt'])
+        for ev in self.config['evals']:
+            prompt_path = os.path.join(self.evals_dir, ev['prompt'])
             with open(prompt_path, 'r', encoding='utf-8') as fh:
                 content = fh.read().strip()
             assert len(content) > 50, (
@@ -281,8 +303,8 @@ class TestSkills2FrontmatterEvals:
             )
 
     def test_eval_expected_files_are_non_empty(self):
-        for ev in self.fm['evals']:
-            expected_path = os.path.join(SKILL_ROOT, ev['expected'])
+        for ev in self.config['evals']:
+            expected_path = os.path.join(self.evals_dir, ev['expected'])
             with open(expected_path, 'r', encoding='utf-8') as fh:
                 content = fh.read().strip()
             assert len(content) > 50, (
@@ -376,3 +398,55 @@ class TestSkillMdSizeBudget:
             assert must in debugging, (
                 f'debugging.md is missing CLI reference command: {must!r}'
             )
+
+
+class TestVersionConsistency:
+    """All release metadata and hook output surfaces represent the skill
+    release version and must be updated together. A drifting copy (as
+    happened when the hooks reported 1.1.0 after the skill moved to 1.2.0)
+    makes logs and bug reports ambiguous about what actually ran — do not
+    delete this check; extend it when a new version surface is added.
+    """
+
+    def _skill_md_version(self):
+        return str(_parse_frontmatter(SKILL_MD)['version'])
+
+    def _eval_yaml_version(self):
+        path = os.path.join(SKILL_ROOT, 'evals', 'eval.yaml')
+        with open(path, 'r', encoding='utf-8') as fh:
+            return str(yaml.safe_load(fh)['version'])
+
+    def _marketplace_version(self):
+        path = os.path.join(SKILL_ROOT, '.claude-plugin', 'marketplace.json')
+        with open(path, 'r', encoding='utf-8') as fh:
+            return str(json.load(fh)['metadata']['version'])
+
+    def _hook_reported_version(self, script, tmp_path, extra_args=()):
+        result = subprocess.run(
+            [sys.executable, os.path.join(SKILL_ROOT, 'scripts', script),
+             *extra_args],
+            capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, 'SKILL_WORKSPACE': str(tmp_path)},
+            timeout=10,
+        )
+        return str(json.loads(result.stdout)['version'])
+
+    def test_all_version_surfaces_match(self, tmp_path):
+        reference = self._skill_md_version()
+        surfaces = {
+            'SKILL.md frontmatter': reference,
+            'evals/eval.yaml': self._eval_yaml_version(),
+            '.claude-plugin/marketplace.json': self._marketplace_version(),
+            'skill_stop_hook.py output': self._hook_reported_version(
+                'skill_stop_hook.py', tmp_path),
+            'skill_validate_hook.py output': self._hook_reported_version(
+                'skill_validate_hook.py', tmp_path,
+                extra_args=('--command', 'ros2 topic list')),
+        }
+        mismatched = {name: v for name, v in surfaces.items()
+                      if v != reference}
+        assert not mismatched, (
+            f'Version surfaces out of sync with SKILL.md '
+            f'({reference}): {mismatched}'
+        )

@@ -5,6 +5,18 @@ This hook runs before tool invocations during skill execution. It provides
 context-aware warnings when the user's actions may conflict with ROS 2
 engineering best practices defined in the skill.
 
+Modes:
+
+* **Event mode** (default, no arguments): consumes a Claude Code PreToolUse
+  payload from stdin (or the ``TOOL_NAME``/``TOOL_INPUT`` env fallback) and
+  checks the tool input. Without a payload there is nothing to check and the
+  result is an empty pass — this mode is NOT a workspace scanner.
+* **Manual mode** (``--file`` and/or ``--command``): for platforms without
+  Claude Code hooks. ``--file`` checks the named source files for
+  anti-patterns; ``--command`` inspects a shell command string for dangerous
+  patterns. The command string is analyzed only — it is NEVER executed.
+  Both options may be combined; all issues are aggregated into one report.
+
 Scope and limits — read before relying on this:
 
 * The Bash dangerous-command checks below are best-effort sanity guards
@@ -25,6 +37,7 @@ Exit codes:
     1 — Blocking issue detected (should halt tool execution)
 """
 
+import argparse
 import json
 import os
 import re
@@ -383,8 +396,63 @@ def _read_tool_context():
     return tool_name, tool_input, debug
 
 
-def main():
-    debug_mode = '--debug' in sys.argv
+def _manual_check_files(paths):
+    """Check files named on the command line, without the event hook's
+    silent-skip behavior.
+
+    The event-mode ``check_file`` swallows read errors because a file can
+    legitimately vanish mid-edit; in manual mode a path the user explicitly
+    named must never produce a false pass. Check order matters: existence
+    before the extension filter, so a missing ``missing.txt`` is reported
+    as an error rather than misclassified as an unsupported-extension skip.
+
+    Returns (issues, checks_skipped). Never aborts early — every path is
+    examined so one bad file does not hide findings in the others.
+    """
+    issues = []
+    skipped = []
+    for path in paths:
+        if not os.path.exists(path):
+            issues.append({
+                'file': path,
+                'line': 0,
+                'severity': 'error',
+                'message': 'File not found',
+            })
+            continue
+        if not os.path.isfile(path):
+            issues.append({
+                'file': path,
+                'line': 0,
+                'severity': 'error',
+                'message': 'Not a regular file (directories are not scanned)',
+            })
+            continue
+        ext = os.path.splitext(path)[1]
+        if ext not in CHECKABLE_EXTENSIONS:
+            skipped.append(
+                f'{path}: unsupported extension {ext or "(none)"} — '
+                f'checked extensions: '
+                f'{", ".join(sorted(CHECKABLE_EXTENSIONS))}')
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                content = fh.read()
+        except (OSError, UnicodeError) as exc:
+            issues.append({
+                'file': path,
+                'line': 0,
+                'severity': 'error',
+                'message': f'Cannot read file: {exc}',
+            })
+            continue
+        issues.extend(check_content(content, path))
+    return issues, skipped
+
+
+def _event_mode_issues():
+    """Original event-mode checks; returns (issues, tool_name, tool_input,
+    debug)."""
     tool_name, tool_input, debug = _read_tool_context()
 
     issues = []
@@ -428,16 +496,60 @@ def main():
         if command:
             issues.extend(_check_dangerous_commands(command))
 
+    return issues, tool_name, tool_input, debug
+
+
+def main(argv=None):
+    """Entry point. *argv* defaults to sys.argv[1:]; tests that call main()
+    in-process pass an explicit list so the host runner's argv is ignored."""
+    parser = argparse.ArgumentParser(
+        description=('ROS 2 skill PreToolUse hook. Without arguments it '
+                     'consumes a Claude Code hook payload (event mode); '
+                     'with --file/--command it validates the named inputs '
+                     'directly (manual mode).'))
+    parser.add_argument(
+        '--file', nargs='+', metavar='PATH', default=None,
+        help='check the named source files for ROS 2 anti-patterns')
+    parser.add_argument(
+        '--command', metavar='CMD', default=None,
+        help=('inspect a shell command string for dangerous patterns; '
+              'the string is analyzed only and never executed'))
+    parser.add_argument(
+        '--debug', action='store_true',
+        help='include payload-resolution debug info in the JSON result')
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    manual_mode = bool(args.file) or args.command is not None
+
+    checks_skipped = []
+    debug = {}
+    tool_name = ''
+    tool_input = {}
+
+    if manual_mode:
+        issues = []
+        # Aggregate across ALL inputs — one failing file must not hide
+        # findings in the remaining files or in --command.
+        if args.file:
+            file_issues, checks_skipped = _manual_check_files(args.file)
+            issues.extend(file_issues)
+        if args.command is not None:
+            issues.extend(_check_dangerous_commands(args.command))
+    else:
+        issues, tool_name, tool_input, debug = _event_mode_issues()
+
     result = {
         'hook': 'ros2-engineering-skills:pre-tool-use',
-        'version': '1.1.0',
+        'version': '1.2.0',
+        'mode': 'manual' if manual_mode else 'event',
         'issues_count': len(issues),
         'issues': issues,
+        'checks_skipped': checks_skipped,
         'status': 'fail' if any(
             i['severity'] == 'error' for i in issues
         ) else 'pass',
     }
-    if debug_mode:
+    if args.debug and not manual_mode:
         result['debug'] = {**debug, 'tool_name': tool_name,
                            'tool_input_keys': sorted(tool_input.keys())}
 

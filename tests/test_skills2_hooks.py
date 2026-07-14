@@ -20,7 +20,11 @@ from skill_stop_hook import (
     validate_launch_file_syntax,
     validate_package_xml,
     find_package_xmls,
+    find_yaml_files,
+    validate_nav2_yaml,
+    _distro_at_least,
     _git_touched_paths,
+    _resolve_log_path,
 )
 from skill_validate_hook import (
     check_content,
@@ -874,7 +878,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', '')
         monkeypatch.setenv('TOOL_INPUT', '')
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_write_clean(self, monkeypatch):
@@ -886,7 +890,7 @@ class TestValidateHookMainDirect:
             'content': 'import rclpy\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_write_antipattern(self, monkeypatch):
@@ -898,7 +902,7 @@ class TestValidateHookMainDirect:
             'content': 'time.sleep(5)\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0  # Warnings don't block
 
     def test_main_edit_antipattern(self, monkeypatch):
@@ -910,7 +914,7 @@ class TestValidateHookMainDirect:
             'new_string': 'global node_ref\n',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_bash_dangerous(self, monkeypatch):
@@ -921,7 +925,7 @@ class TestValidateHookMainDirect:
             'command': 'rm -rf /opt/ros',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 1
 
     def test_main_bash_safe(self, monkeypatch):
@@ -932,7 +936,7 @@ class TestValidateHookMainDirect:
             'command': 'colcon build',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_bash_invalid_json(self, monkeypatch):
@@ -941,7 +945,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', 'Bash')
         monkeypatch.setenv('TOOL_INPUT', 'not json')
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_write_no_content(self, monkeypatch):
@@ -952,7 +956,7 @@ class TestValidateHookMainDirect:
             'file_path': 'test.py',
         }))
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
     def test_main_invalid_json_write(self, monkeypatch):
@@ -961,7 +965,7 @@ class TestValidateHookMainDirect:
         monkeypatch.setenv('TOOL_NAME', 'Write')
         monkeypatch.setenv('TOOL_INPUT', '{bad json')
         with _pytest.raises(SystemExit) as exc_info:
-            main()
+            main(argv=[])
         assert exc_info.value.code == 0
 
 
@@ -1273,3 +1277,449 @@ class TestResolveWorkspaceDirect:
         monkeypatch.setattr('sys.stdin', io.StringIO(''))
         assert os.path.realpath(_resolve_workspace()) == os.path.realpath(
             str(tmp_path))
+
+
+class TestStopHookRunsLogOptIn:
+    """.skill-runs.log is opt-in via SKILL_RUNS_LOG.
+
+    Without the opt-in the Stop hook must never write into the workspace —
+    a read-only session that triggers the hook must leave the working tree
+    exactly as it found it.
+    """
+
+    HOOK = os.path.join(SCRIPTS_DIR, 'skill_stop_hook.py')
+
+    def _run(self, workspace, env_extra=None):
+        env = os.environ.copy()
+        env.pop('SKILL_RUNS_LOG', None)
+        env['SKILL_WORKSPACE'] = str(workspace)
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, self.HOOK],
+            capture_output=True, text=True, env=env,
+            stdin=subprocess.DEVNULL)
+
+    def test_no_log_written_by_default(self, tmp_path):
+        result = self._run(tmp_path)
+        assert result.returncode == 0
+        assert not (tmp_path / '.skill-runs.log').exists()
+
+    def test_default_run_does_not_dirty_git_worktree(self, tmp_path):
+        subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+
+        def porcelain():
+            return subprocess.run(
+                ['git', '-C', str(tmp_path), 'status', '--porcelain'],
+                capture_output=True, text=True).stdout
+
+        before = porcelain()
+        result = self._run(tmp_path)
+        assert result.returncode == 0
+        assert porcelain() == before
+
+    def test_log_written_when_opted_in(self, tmp_path):
+        result = self._run(tmp_path, {'SKILL_RUNS_LOG': '1'})
+        assert result.returncode == 0
+        log = tmp_path / '.skill-runs.log'
+        assert log.exists()
+        entry = json.loads(log.read_text(encoding='utf-8').splitlines()[0])
+        assert entry['status'] == 'pass'
+        assert 'yaml_files_checked' in entry
+
+    def test_log_written_to_custom_absolute_path(self, tmp_path):
+        state_dir = tmp_path / 'agent-state'
+        state_dir.mkdir()
+        log = state_dir / 'runs.log'
+        result = self._run(tmp_path, {'SKILL_RUNS_LOG': str(log)})
+        assert result.returncode == 0
+        assert log.exists()
+        # Nothing landed in the workspace itself.
+        assert not (tmp_path / '.skill-runs.log').exists()
+
+    def test_missing_parent_directory_never_fails_the_hook(self, tmp_path):
+        bogus = tmp_path / 'no' / 'such' / 'dir' / 'runs.log'
+        result = self._run(tmp_path, {'SKILL_RUNS_LOG': str(bogus)})
+        # Logging is best-effort: a bad destination must not fail validation.
+        assert result.returncode == 0
+        assert not bogus.exists()
+
+    def test_resolve_unset_returns_none(self, monkeypatch):
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        assert _resolve_log_path('/ws') is None
+
+    def test_resolve_blank_returns_none(self, monkeypatch):
+        monkeypatch.setenv('SKILL_RUNS_LOG', '   ')
+        assert _resolve_log_path('/ws') is None
+
+    def test_resolve_truthy_uses_workspace_default(self, monkeypatch):
+        for truthy in ('1', 'true', 'YES'):
+            monkeypatch.setenv('SKILL_RUNS_LOG', truthy)
+            assert _resolve_log_path('/ws') == os.path.join(
+                '/ws', '.skill-runs.log')
+
+    def test_resolve_relative_path_joins_workspace(self, monkeypatch):
+        monkeypatch.setenv('SKILL_RUNS_LOG', os.path.join('logs', 'r.log'))
+        assert _resolve_log_path('/ws') == os.path.join(
+            '/ws', 'logs', 'r.log')
+
+
+class TestDistroOrdering:
+    """_distro_at_least uses the explicit order table, never string compare."""
+
+    def test_equal_boundary(self):
+        assert _distro_at_least('humble', 'humble') is True
+
+    def test_newer_than_boundary(self):
+        assert _distro_at_least('jazzy', 'humble') is True
+        assert _distro_at_least('iron', 'humble') is True
+
+    def test_older_than_boundary(self):
+        assert _distro_at_least('galactic', 'humble') is False
+        assert _distro_at_least('foxy', 'galactic') is False
+
+    def test_unknown_distro_is_none(self):
+        assert _distro_at_least('rolling', 'humble') is None
+        assert _distro_at_least('quixotic', 'humble') is None
+
+    def test_unset_is_none(self):
+        assert _distro_at_least(None, 'humble') is None
+        assert _distro_at_least('', 'humble') is None
+
+    def test_case_and_whitespace_tolerant(self):
+        assert _distro_at_least(' Humble ', 'humble') is True
+
+
+class TestStopHookNav2YamlLint:
+    """Distro-aware lint for Nav2 parameter YAML: syntax + legacy names.
+
+    The two legacy identifiers have DIFFERENT distro boundaries and must be
+    classified separately: recovery naming changed in Humble, the BT
+    navigator parameter changed in Galactic.
+    """
+
+    _LEGACY_RECOVERY = (
+        'recoveries_server:\n'
+        '  ros__parameters:\n'
+        '    recovery_plugins: ["spin"]\n'
+        '    spin:\n'
+        '      plugin: "nav2_recoveries/Spin"\n'
+    )
+    _LEGACY_BT_PARAM = (
+        'bt_navigator:\n'
+        '  ros__parameters:\n'
+        '    default_bt_xml_filename: "my_bt.xml"\n'
+    )
+
+    def test_legacy_recovery_naming_flagged_on_humble(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY, encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+        assert 'pre-Humble recovery naming' in issues[0]['message']
+
+    def test_legacy_recovery_naming_valid_on_galactic(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'galactic')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY, encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_pre_galactic_bt_param_flagged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_BT_PARAM, encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+        assert 'pre-Galactic BT navigator parameter' in issues[0]['message']
+
+    def test_pre_galactic_bt_param_valid_on_foxy(
+            self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'foxy')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_BT_PARAM, encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_unknown_distro_adds_confirm_note(self, tmp_path, monkeypatch):
+        monkeypatch.delenv('ROS_DISTRO', raising=False)
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY, encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert 'confirm the target distro' in issues[0]['message']
+
+    def test_boundaries_classified_separately(self, tmp_path, monkeypatch):
+        """On Galactic the recovery naming is fine but the BT parameter is
+        already legacy — the two advisories must not share a boundary."""
+        monkeypatch.setenv('ROS_DISTRO', 'galactic')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(self._LEGACY_RECOVERY + self._LEGACY_BT_PARAM,
+                     encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert 'pre-Galactic BT navigator parameter' in issues[0]['message']
+
+    def test_syntax_error_flagged_for_nav2_named_file(self, tmp_path):
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text('foo: [unclosed\n', encoding='utf-8')
+        issues = validate_nav2_yaml(str(f))
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'YAML syntax error' in issues[0]['message']
+
+    def test_syntax_error_skipped_for_unrelated_file(self, tmp_path):
+        f = tmp_path / 'random_config.yaml'
+        f.write_text('foo: [unclosed\n', encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_non_nav2_yaml_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'ci.yaml'
+        f.write_text('jobs:\n  build:\n    steps: []\n', encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_commented_legacy_names_not_flagged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(
+            '# recoveries_server / nav2_recoveries/ was pre-Humble naming\n'
+            'behavior_server:\n'
+            '  ros__parameters:\n'
+            '    behavior_plugins: ["wait"]\n'
+            '    wait:\n'
+            '      plugin: "nav2_behaviors/Wait"\n',
+            encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_modern_humble_config_clean(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        f = tmp_path / 'nav2_params.yaml'
+        f.write_text(
+            'bt_navigator:\n'
+            '  ros__parameters:\n'
+            '    default_nav_to_pose_bt_xml: "my_bt.xml"\n'
+            'behavior_server:\n'
+            '  ros__parameters:\n'
+            '    behavior_plugins: ["wait", "spin", "backup"]\n'
+            '    wait:\n'
+            '      plugin: "nav2_behaviors/Wait"\n'
+            '    spin:\n'
+            '      plugin: "nav2_behaviors/Spin"\n'
+            '    backup:\n'
+            '      plugin: "nav2_behaviors/BackUp"\n',
+            encoding='utf-8')
+        assert validate_nav2_yaml(str(f)) == []
+
+    def test_nonexistent_file_returns_no_issues(self):
+        assert validate_nav2_yaml('/nonexistent/nav2_params.yaml') == []
+
+    def test_find_yaml_files(self, tmp_path):
+        (tmp_path / 'a.yaml').write_text('x: 1\n', encoding='utf-8')
+        (tmp_path / 'b.yml').write_text('y: 2\n', encoding='utf-8')
+        (tmp_path / 'c.txt').write_text('z\n', encoding='utf-8')
+        build = tmp_path / 'build'
+        build.mkdir()
+        (build / 'skip.yaml').write_text('n: 0\n', encoding='utf-8')
+        found = find_yaml_files(str(tmp_path))
+        names = sorted(os.path.basename(p) for p in found)
+        assert names == ['a.yaml', 'b.yml']
+
+
+class TestValidateHookManualCLI:
+    """--file/--command manual mode: no event payload needed, and named
+    inputs must never produce a false pass (missing/unreadable files are
+    errors, not silent skips)."""
+
+    HOOK = os.path.join(SCRIPTS_DIR, 'skill_validate_hook.py')
+
+    def _run(self, *args):
+        env = os.environ.copy()
+        env.pop('TOOL_NAME', None)
+        env.pop('TOOL_INPUT', None)
+        return subprocess.run(
+            [sys.executable, self.HOOK, *args],
+            capture_output=True, text=True, env=env,
+            stdin=subprocess.DEVNULL, timeout=10)
+
+    def test_missing_file_is_error_not_skip(self, tmp_path):
+        # A nonexistent .txt path must be reported missing, not
+        # misclassified as an unsupported-extension skip.
+        missing = tmp_path / 'missing.txt'
+        result = self._run('--file', str(missing))
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data['mode'] == 'manual'
+        assert data['status'] == 'fail'
+        assert any('File not found' in i['message'] for i in data['issues'])
+        assert data['checks_skipped'] == []
+
+    def test_directory_is_error(self, tmp_path):
+        result = self._run('--file', str(tmp_path))
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert any('regular file' in i['message'] for i in data['issues'])
+
+    def test_unsupported_extension_is_skipped_not_failed(self, tmp_path):
+        f = tmp_path / 'notes.md'
+        f.write_text('time.sleep(1)\n', encoding='utf-8')
+        result = self._run('--file', str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+        assert data['issues'] == []
+        assert len(data['checks_skipped']) == 1
+        assert 'unsupported extension' in data['checks_skipped'][0]
+
+    def test_antipattern_file_warns_but_passes(self, tmp_path):
+        f = tmp_path / 'node.py'
+        f.write_text('import time\ntime.sleep(1)\n', encoding='utf-8')
+        result = self._run('--file', str(f))
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+        assert any('time.sleep' in i['message'] for i in data['issues'])
+        assert all(i['severity'] == 'warning' for i in data['issues'])
+
+    def test_undecodable_file_is_error(self, tmp_path):
+        f = tmp_path / 'binary.py'
+        f.write_bytes(b'\xff\xfe\x00\x01binary')
+        result = self._run('--file', str(f))
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert any('Cannot read file' in i['message'] for i in data['issues'])
+
+    def test_dangerous_command_fails(self):
+        result = self._run('--command', 'rm -rf /')
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data['mode'] == 'manual'
+        assert data['status'] == 'fail'
+        assert any(i['severity'] == 'error' for i in data['issues'])
+
+    def test_safe_command_passes(self):
+        result = self._run('--command', 'ros2 topic list')
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['status'] == 'pass'
+        assert data['issues'] == []
+
+    def test_file_and_command_are_aggregated(self, tmp_path):
+        # One bad file must not stop the scan: the remaining file and the
+        # command are still checked and everything lands in one report.
+        good = tmp_path / 'node.py'
+        good.write_text('time.sleep(1)\n', encoding='utf-8')
+        missing = tmp_path / 'gone.py'
+        result = self._run('--file', str(missing), str(good),
+                           '--command', 'rm -rf /')
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        messages = [i['message'] for i in data['issues']]
+        assert any('File not found' in m for m in messages)
+        assert any('time.sleep' in m for m in messages)
+        assert any('Refusing' in m for m in messages)
+
+    def test_no_args_stays_in_event_mode(self):
+        result = self._run()
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data['mode'] == 'event'
+        assert data['status'] == 'pass'
+        assert data['checks_skipped'] == []
+
+
+class TestDistroOrderingLyrical:
+    """Lyrical is a known release and must order, not fall to 'unknown'."""
+
+    def test_lyrical_is_newer_than_humble(self):
+        assert _distro_at_least('lyrical', 'humble') is True
+
+    def test_lyrical_is_newer_than_galactic(self):
+        assert _distro_at_least('lyrical', 'galactic') is True
+
+
+class TestStopHookDiagnostics:
+    """checks_skipped and severity-tagged log summaries."""
+
+    def _run_main(self, monkeypatch, capsys, workspace):
+        import pytest as _pytest
+        import skill_stop_hook
+        monkeypatch.setenv('SKILL_WORKSPACE', str(workspace))
+        with _pytest.raises(SystemExit) as exc_info:
+            skill_stop_hook.main()
+        return exc_info.value.code, json.loads(capsys.readouterr().out)
+
+    def test_checks_skipped_key_always_present(self, tmp_path,
+                                               monkeypatch, capsys):
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0
+        assert data['checks_skipped'] == []
+
+    def test_pyyaml_skip_reported_only_with_yaml_in_scope(
+            self, tmp_path, monkeypatch, capsys):
+        import skill_stop_hook
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        monkeypatch.setattr(skill_stop_hook, '_HAVE_YAML', False)
+        (tmp_path / 'nav2_params.yaml').write_text(
+            'bt_navigator:\n  ros__parameters: {}\n', encoding='utf-8')
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0
+        assert data['checks_skipped'] == [
+            'nav2_yaml: PyYAML is not installed']
+
+    def test_no_pyyaml_skip_on_empty_workspace(self, tmp_path,
+                                               monkeypatch, capsys):
+        import skill_stop_hook
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        monkeypatch.setattr(skill_stop_hook, '_HAVE_YAML', False)
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0
+        # No YAML was in scope, so the lint had nothing to skip.
+        assert data['checks_skipped'] == []
+
+    def test_warning_only_run_logs_issue_summaries(self, tmp_path,
+                                                   monkeypatch, capsys):
+        monkeypatch.setenv('SKILL_RUNS_LOG', '1')
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        (tmp_path / 'nav2_params.yaml').write_text(
+            'recoveries_server:\n'
+            '  ros__parameters:\n'
+            '    recovery_plugins: ["spin"]\n'
+            '    spin:\n'
+            '      plugin: "nav2_recoveries/Spin"\n',
+            encoding='utf-8')
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0  # warnings never fail the hook
+        assert data['issues_count'] == 1
+        entry = json.loads((tmp_path / '.skill-runs.log').read_text(
+            encoding='utf-8').splitlines()[0])
+        # Pre-1.2 field kept for compatibility, empty on warning-only runs;
+        # the new field carries the detail.
+        assert entry['error_summaries'] == []
+        assert len(entry['issue_summaries']) == 1
+        assert entry['issue_summaries'][0].startswith('[warning] ')
+        assert 'nav2_params.yaml' in entry['issue_summaries'][0]
+
+    def test_issue_summaries_sort_errors_first(self, tmp_path,
+                                               monkeypatch, capsys):
+        monkeypatch.setenv('SKILL_RUNS_LOG', '1')
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        (tmp_path / 'nav2_params.yaml').write_text(
+            'bt_navigator:\n'
+            '  ros__parameters:\n'
+            '    default_bt_xml_filename: "x.xml"\n',
+            encoding='utf-8')
+        (tmp_path / 'launch').mkdir()
+        (tmp_path / 'launch' / 'bad.launch.py').write_text(
+            'def wrong_name():\n    pass\n', encoding='utf-8')
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 1
+        entry = json.loads((tmp_path / '.skill-runs.log').read_text(
+            encoding='utf-8').splitlines()[0])
+        assert entry['issue_summaries'][0].startswith('[error] ')
+        assert any(s.startswith('[warning] ')
+                   for s in entry['issue_summaries'])

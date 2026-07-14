@@ -2,7 +2,7 @@
 
 Agent skill for production-grade ROS 2 development — from first workspace to fleet deployment.
 
-Works with [Claude Code](https://code.claude.com), [Codex](https://developers.openai.com/codex), [Cursor](https://cursor.sh), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and any agent supporting the [Agent Skills](https://agentskills.io) standard.
+`SKILL.md` and `references/` are platform-neutral knowledge documents that work with [Claude Code](https://code.claude.com), [Codex](https://developers.openai.com/codex), [Cursor](https://cursor.sh), [Gemini CLI](https://github.com/google-gemini/gemini-cli), and any agent supporting the [Agent Skills](https://agentskills.io) standard. The hook wiring (automatic validation on tool use / stop) and the opt-in `.skill-runs.log` are **Claude Code-specific**; on other platforms the `scripts/` validators can be run manually (see Installation).
 
 ## Before / After
 
@@ -138,6 +138,25 @@ git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.claude/sk
 git clone https://github.com/dbwls99706/ros2-engineering-skills.git ~/.agents/skills/ros2-engineering-skills
 ```
 
+On these platforms the knowledge documents load, but the Claude Code hook
+block in `SKILL.md` frontmatter is ignored: nothing runs automatically and
+`.skill-runs.log` is never created. Run the validators manually when needed
+(Python 3.10+; the YAML lint additionally needs PyYAML):
+
+```bash
+# Manual workspace validation (launch files, package.xml, Nav2 YAML lint)
+SKILL_WORKSPACE=/path/to/your/workspace python3 scripts/skill_stop_hook.py
+
+# Manual anti-pattern / dangerous-command checks.
+# The quoted command is inspected only; it is never executed.
+python3 scripts/skill_validate_hook.py --file src/my_node.py
+python3 scripts/skill_validate_hook.py --command 'rm -rf /'        # status: fail, exit 1
+python3 scripts/skill_validate_hook.py --command 'ros2 topic list'  # status: pass, exit 0
+```
+
+Without `--file`/`--command`, `skill_validate_hook.py` expects a Claude Code
+PreToolUse payload on stdin — it is not a workspace-scanning CLI in that mode.
+
 ### Cursor
 
 ```bash
@@ -187,7 +206,7 @@ ros2-engineering-skills/
 │   ├── rosbag2_qos_checker.py      # Validate QoS compatibility for rosbag2 playback against subscriber profiles
 │   ├── eval_runner.py              # Skills 2.0 eval harness — structural fixture coverage check
 │   ├── skill_validate_hook.py      # Skills 2.0 PreToolUse hook — anti-pattern + dangerous-command guard
-│   └── skill_stop_hook.py          # Skills 2.0 Stop hook — workspace launch/package.xml validation + .skill-runs.log
+│   └── skill_stop_hook.py          # Skills 2.0 Stop hook — launch/package.xml validation + Nav2 YAML lint + opt-in .skill-runs.log
 ├── tests/
 │   ├── test_create_package.py      # scaffolding, validation, copyright, lifecycle matcher regression
 │   ├── test_launch_validator.py    # AST visitors, patterns, CLI, main()
@@ -207,12 +226,26 @@ ros2-engineering-skills/
 
 ## Current status
 
-**Complete & Verified.** 23 reference files, 15,000+ lines of production-grade guidance, 7 utility/harness scripts (4 user-facing + 2 Skills 2.0 hooks + 1 eval harness) — all tested and **validated on live ROS 2 Jazzy environments.**
+23 reference files, 15,000+ lines of guidance, 7 utility/harness scripts (4 user-facing + 2 Skills 2.0 hooks + 1 eval harness). The scripts and harness are covered by automated tests and were exercised on live ROS 2 Jazzy environments.
+
+**What the automated checks do — and do not — verify:**
+
+- The hooks perform *lightweight validation only*: launch-file Python syntax
+  (including a `generate_launch_description` check), `package.xml` structure,
+  and a Nav2 YAML lint for syntax and selected legacy identifiers
+  (pre-Humble recovery naming, the pre-Galactic BT navigator parameter).
+  They do **not** verify plugin exports, parameter types, BT XML contents,
+  CMake exports, real builds, or lifecycle behavior.
+- The factual accuracy of the reference documents is **not** established by
+  the test suite. A small set of documentation regression tests
+  (`tests/test_doc_factuality.py`) pins previously discovered errors so they
+  cannot reappear; everything else should be verified against your installed
+  distro (source-first procedure: `references/navigation.md` section 6).
 
 | | |
 |---|---|
-| **429 tests** | Unit + property-based (Hypothesis) + CLI + integration + Skills 2.0 hooks/evals + cross-doc consistency |
-| **95% coverage** | All scripts verified with flake8 + mypy clean |
+| **Automated tests** | Hooks, frontmatter, eval definitions, script behavior (unit + property-based Hypothesis + CLI + integration), and selected documentation regressions |
+| **Quality gates** | `pytest --cov=scripts --cov-fail-under=90`; flake8 + mypy clean |
 | **Real-world Evals** | **Validated empirically on WSL (Ubuntu 24.04 + ROS 2 Jazzy)** for SROS2, micro-ROS `rclc`, and Multi-robot fleet scenarios. The `eval_runner.py` performs *structural* checks on prompt/expected fixtures (keyword coverage of declared criteria); model-output quality is evaluated outside this runner. |
 | **5 CI jobs** | Lint (flake8 + mypy + pip-audit), unit-tests (py 3.10/3.11/3.12 matrix), ros2-integration (humble/jazzy/rolling Docker matrix), markdown-lint, lint-scripts |
 
