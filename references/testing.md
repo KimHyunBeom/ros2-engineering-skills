@@ -5,12 +5,13 @@
 1. Unit testing with gtest (C++) and pytest (Python)
 2. Node-level testing
 3. launch_testing for integration tests
-4. Mock hardware for ros2_control
-5. Test fixtures and helpers
-6. Code coverage
-7. CI/CD pipeline design
-8. Rosbag-based regression testing
-9. Common failures and fixes
+4. Configure-only plugin validation with hardware isolation
+5. Mock hardware for ros2_control
+6. Test fixtures and helpers
+7. Code coverage
+8. CI/CD pipeline design
+9. Rosbag-based regression testing
+10. Common failures and fixes
 
 ---
 
@@ -266,8 +267,12 @@ def generate_test_description():
         package='my_robot_driver',
         executable='driver_node',
         name='driver',
+        # Wall clock: do NOT set use_sim_time here. use_sim_time is only
+        # correct when something publishes /clock (Gazebo, or
+        # `ros2 bag play --clock` as in section 9). With use_sim_time and
+        # no /clock publisher, ROS time never advances — timer-driven
+        # drivers publish nothing and the test hangs until timeout.
         parameters=[{
-            'use_sim_time': True,
             'publish_rate': 50.0,
         }],
     )
@@ -357,7 +362,73 @@ colcon test-result --verbose
 launch_test test/test_driver_integration.launch.py
 ```
 
-## 4. Mock hardware for ros2_control
+## 4. Configure-only plugin validation with hardware isolation
+
+On a real robot you often need to verify that a new configuration loads —
+plugin names resolve, parameters parse, pluginlib finds the classes —
+**without** letting anything drive the actuators. Lifecycle nodes make this
+possible: transition to `configure` only, read the logs, and exit without
+ever reaching `active`.
+
+**Configure-only is not a no-motion guarantee by itself.** `on_configure`
+runs vendor code: a hardware driver or vendor plugin may open devices,
+initialize hardware, or even command a posture during configure. Isolation
+comes from the checklist, not from the lifecycle state alone.
+
+### Isolation checklist (before touching lifecycle states)
+
+- No pre-existing active controllers or lifecycle nodes:
+  `ros2 lifecycle list` each managed node, check controller states.
+- Identify every consumer of `cmd_vel`-family topics and the actual actuator
+  command topic: `ros2 topic info /cmd_vel -v` (and the vendor topic).
+- Block independent output paths: cmd_vel mux priorities, teleop sources,
+  watchdogs that auto-command, vendor drivers with their own outputs.
+- Physically secure the robot where possible: motor enable off, e-stop
+  engaged, robot on a stand.
+- Confirm (from vendor docs or source) that the plugin's `on_configure`
+  does not itself initialize motion or posture control.
+- Compare `/cmd_vel`-family publishers and the actuator command topic
+  before and after the check — nothing new should have published.
+
+### Configure-only recipe (Nav2 controller_server example)
+
+```bash
+# 1. Launch the node(s) under test with your candidate params — unmanaged
+#    by the lifecycle manager, so nothing auto-activates:
+ros2 run nav2_controller controller_server \
+  --ros-args --params-file candidate_nav2_params.yaml &
+
+# 2. Transition to configure ONLY (never activate):
+ros2 lifecycle set /controller_server configure
+
+# 3. Read the logs. Successful pluginlib creation lines confirm plugin
+#    names and parameter loading, e.g.:
+#      Created controller : FollowPath of type dwb_core::DWBLocalPlanner
+#      Created goal checker : goal_checker of type nav2_controller::SimpleGoalChecker
+#    A wrong plugin name or malformed YAML fails HERE — before any motion.
+
+# 4. Tear down through the normal transitions:
+ros2 lifecycle set /controller_server cleanup    # inactive -> unconfigured
+ros2 lifecycle set /controller_server shutdown   # unconfigured -> finalized
+kill %1                                          # stop the process
+
+# If configure FAILED, the node stays unconfigured; shut down and stop the
+# process directly:
+#   ros2 lifecycle set /controller_server shutdown && kill %1
+```
+
+Valid transition paths for reference:
+
+```text
+unconfigured → configure → inactive
+inactive     → cleanup   → unconfigured
+unconfigured → shutdown  → finalized
+```
+
+Never issue `activate` as part of a validation run on hardware — that is a
+deliberate, separate step with its own sign-off.
+
+## 5. Mock hardware for ros2_control
 
 ### Using mock_components for testing
 
@@ -416,7 +487,7 @@ class TestControllerLoading(unittest.TestCase):
         self.assertIn('active', result.stdout)
 ```
 
-## 5. Test fixtures and helpers
+## 6. Test fixtures and helpers
 
 ### ROS 2 test fixture pattern (C++)
 
@@ -465,7 +536,7 @@ def wait_for_condition(node, condition_fn, timeout_sec=5.0):
     return False
 ```
 
-## 6. Code coverage
+## 7. Code coverage
 
 ### C++ coverage with lcov
 
@@ -503,7 +574,7 @@ cd src/my_robot_monitor
 python -m pytest --cov=my_robot_monitor --cov-report=html test/
 ```
 
-## 7. CI/CD pipeline design
+## 8. CI/CD pipeline design
 
 ### GitHub Actions for ROS 2
 
@@ -605,7 +676,7 @@ Run Gazebo headless in CI for physics-based integration tests:
 - **Test in container:** Use official `ros:jazzy` image for reproducibility
 - **Matrix builds:** Test across Humble + Jazzy if supporting both
 
-## 8. Rosbag-based regression testing
+## 9. Rosbag-based regression testing
 
 ### Rosbag regression testing
 
@@ -667,7 +738,7 @@ class TestPerceptionRegression(unittest.TestCase):
         self.assertGreater(len(detections), 0, 'No detections from known test data')
 ```
 
-## 9. Common failures and fixes
+## 10. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|
