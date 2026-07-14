@@ -56,7 +56,17 @@ _DISTRO_ORDER = {
     'iron': 4,
     'jazzy': 5,
     'kilted': 6,
+    'lyrical': 7,
 }
+
+# PyYAML availability, resolved once at import. The Nav2 YAML lint needs it;
+# when absent the lint is skipped and main() reports that in checks_skipped
+# so "checks passed" and "checks never ran" are distinguishable.
+try:
+    import yaml as _yaml  # noqa: F401
+    _HAVE_YAML = True
+except ImportError:
+    _HAVE_YAML = False
 
 # Top-level keys that mark a YAML file as a Nav2 parameter file.
 _NAV2_KEY_HINTS = frozenset((
@@ -237,13 +247,13 @@ def validate_nav2_yaml(filepath):
     that the stack builds, or lifecycle behavior. Working with parsed keys
     and values means commented-out mentions are never flagged.
 
-    Requires PyYAML; silently skips when it is unavailable.
+    Requires PyYAML; returns no issues when it is unavailable (main()
+    surfaces that condition via checks_skipped).
     """
     issues = []
-    try:
-        import yaml
-    except ImportError:
+    if not _HAVE_YAML:
         return issues
+    import yaml
 
     try:
         with open(filepath, 'r', encoding='utf-8') as fh:
@@ -417,11 +427,19 @@ def main():
     for yf in yaml_files:
         all_issues.extend(validate_nav2_yaml(yf))
 
+    # Distinguish "no findings" from "check never ran": the key is always
+    # present so consumers get a stable schema, and the PyYAML entry is
+    # only added when there was actually YAML in scope to check.
+    checks_skipped = []
+    if yaml_files and not _HAVE_YAML:
+        checks_skipped.append('nav2_yaml: PyYAML is not installed')
+
     result = {
         'hook': 'ros2-engineering-skills:stop',
         'version': '1.2.0',
         'issues_count': len(all_issues),
         'issues': all_issues,
+        'checks_skipped': checks_skipped,
         'status': 'fail' if any(
             i['severity'] == 'error' for i in all_issues
         ) else 'pass',
@@ -436,6 +454,12 @@ def main():
     if log_path is not None:
         try:
             from datetime import datetime, timezone
+            # Severity-tagged summaries (errors first) so warning-only runs
+            # still leave detail in the log. error_summaries is retained one
+            # release for consumers of the pre-1.2 log format.
+            ordered = sorted(
+                all_issues,
+                key=lambda i: 0 if i['severity'] == 'error' else 1)
             log_entry = {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'status': result['status'],
@@ -443,10 +467,15 @@ def main():
                 'launch_files_checked': len(launch_files),
                 'package_xmls_checked': len(package_xmls),
                 'yaml_files_checked': len(yaml_files),
+                'checks_skipped': checks_skipped,
+                'issue_summaries': [
+                    f"[{i['severity']}] {i['file']}: {i['message']}"
+                    for i in ordered
+                ][:5],  # keep log concise
                 'error_summaries': [
                     i['message'] for i in all_issues
                     if i['severity'] == 'error'
-                ][:5],  # keep log concise
+                ][:5],
             }
             with open(log_path, 'a', encoding='utf-8') as lf:
                 lf.write(json.dumps(log_entry) + '\n')

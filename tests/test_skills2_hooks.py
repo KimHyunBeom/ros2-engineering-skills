@@ -1629,3 +1629,97 @@ class TestValidateHookManualCLI:
         assert data['mode'] == 'event'
         assert data['status'] == 'pass'
         assert data['checks_skipped'] == []
+
+
+class TestDistroOrderingLyrical:
+    """Lyrical is a known release and must order, not fall to 'unknown'."""
+
+    def test_lyrical_is_newer_than_humble(self):
+        assert _distro_at_least('lyrical', 'humble') is True
+
+    def test_lyrical_is_newer_than_galactic(self):
+        assert _distro_at_least('lyrical', 'galactic') is True
+
+
+class TestStopHookDiagnostics:
+    """checks_skipped and severity-tagged log summaries."""
+
+    def _run_main(self, monkeypatch, capsys, workspace):
+        import pytest as _pytest
+        import skill_stop_hook
+        monkeypatch.setenv('SKILL_WORKSPACE', str(workspace))
+        with _pytest.raises(SystemExit) as exc_info:
+            skill_stop_hook.main()
+        return exc_info.value.code, json.loads(capsys.readouterr().out)
+
+    def test_checks_skipped_key_always_present(self, tmp_path,
+                                               monkeypatch, capsys):
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0
+        assert data['checks_skipped'] == []
+
+    def test_pyyaml_skip_reported_only_with_yaml_in_scope(
+            self, tmp_path, monkeypatch, capsys):
+        import skill_stop_hook
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        monkeypatch.setattr(skill_stop_hook, '_HAVE_YAML', False)
+        (tmp_path / 'nav2_params.yaml').write_text(
+            'bt_navigator:\n  ros__parameters: {}\n', encoding='utf-8')
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0
+        assert data['checks_skipped'] == [
+            'nav2_yaml: PyYAML is not installed']
+
+    def test_no_pyyaml_skip_on_empty_workspace(self, tmp_path,
+                                               monkeypatch, capsys):
+        import skill_stop_hook
+        monkeypatch.delenv('SKILL_RUNS_LOG', raising=False)
+        monkeypatch.setattr(skill_stop_hook, '_HAVE_YAML', False)
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0
+        # No YAML was in scope, so the lint had nothing to skip.
+        assert data['checks_skipped'] == []
+
+    def test_warning_only_run_logs_issue_summaries(self, tmp_path,
+                                                   monkeypatch, capsys):
+        monkeypatch.setenv('SKILL_RUNS_LOG', '1')
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        (tmp_path / 'nav2_params.yaml').write_text(
+            'recoveries_server:\n'
+            '  ros__parameters:\n'
+            '    recovery_plugins: ["spin"]\n'
+            '    spin:\n'
+            '      plugin: "nav2_recoveries/Spin"\n',
+            encoding='utf-8')
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 0  # warnings never fail the hook
+        assert data['issues_count'] == 1
+        entry = json.loads((tmp_path / '.skill-runs.log').read_text(
+            encoding='utf-8').splitlines()[0])
+        # Pre-1.2 field kept for compatibility, empty on warning-only runs;
+        # the new field carries the detail.
+        assert entry['error_summaries'] == []
+        assert len(entry['issue_summaries']) == 1
+        assert entry['issue_summaries'][0].startswith('[warning] ')
+        assert 'nav2_params.yaml' in entry['issue_summaries'][0]
+
+    def test_issue_summaries_sort_errors_first(self, tmp_path,
+                                               monkeypatch, capsys):
+        monkeypatch.setenv('SKILL_RUNS_LOG', '1')
+        monkeypatch.setenv('ROS_DISTRO', 'humble')
+        (tmp_path / 'nav2_params.yaml').write_text(
+            'bt_navigator:\n'
+            '  ros__parameters:\n'
+            '    default_bt_xml_filename: "x.xml"\n',
+            encoding='utf-8')
+        (tmp_path / 'launch').mkdir()
+        (tmp_path / 'launch' / 'bad.launch.py').write_text(
+            'def wrong_name():\n    pass\n', encoding='utf-8')
+        code, data = self._run_main(monkeypatch, capsys, tmp_path)
+        assert code == 1
+        entry = json.loads((tmp_path / '.skill-runs.log').read_text(
+            encoding='utf-8').splitlines()[0])
+        assert entry['issue_summaries'][0].startswith('[error] ')
+        assert any(s.startswith('[warning] ')
+                   for s in entry['issue_summaries'])
