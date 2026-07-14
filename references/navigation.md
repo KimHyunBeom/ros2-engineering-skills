@@ -7,11 +7,12 @@
 3. Costmap configuration
 4. Behavior tree navigator
 5. Planner and controller plugins
-6. Recovery behaviors
-7. Waypoint following
-8. Multi-robot navigation
-9. Parameter tuning methodology
-10. Common failures and fixes
+6. Controller server internals and goal checking
+7. Recovery behaviors
+8. Waypoint following
+9. Multi-robot navigation
+10. Parameter tuning methodology
+11. Common failures and fixes
 
 ---
 
@@ -25,7 +26,7 @@
               ┌──────────────┼──────────────┐
               ▼              ▼              ▼
      ┌──────────────┐ ┌──────────┐ ┌──────────────┐
-     │    Planner    │ │Controller│ │  Recovery     │
+     │    Planner    │ │Controller│ │  Behavior     │
      │    Server     │ │  Server  │ │  Server       │
      │ (global path) │ │ (cmd_vel)│ │ (stuck help)  │
      └──────┬───────┘ └────┬─────┘ └──────────────┘
@@ -47,7 +48,7 @@
 - `bt_navigator` — orchestrates navigation tasks via behavior trees
 - `planner_server` — computes global paths
 - `controller_server` — generates velocity commands to follow paths
-- `behavior_server` (Jazzy+, renamed from `recoveries_server` in Humble) -- handles stuck situations (spin, back up, wait)
+- `behavior_server` (Humble+; pre-Humble Nav2 used `recoveries_server` — renamed in the Galactic → Humble migration) -- handles stuck situations (wait, clear, opt-in motion behaviors)
 - `smoother_server` — smooths planned paths (optional)
 - `waypoint_follower` — executes multi-waypoint missions
 - `velocity_smoother` — smooths `cmd_vel` output (optional)
@@ -61,8 +62,8 @@
 |---|---|---|---|
 | BehaviorTree.CPP version | v3 | v3 → v4 transition (XML port remapping syntax changed) | v4 |
 | `cmd_vel` message type | `geometry_msgs/Twist` | `Twist` (default), `TwistStamped` opt-in via `enable_stamped_cmd_vel: true` | **`TwistStamped` default**; set `enable_stamped_cmd_vel: false` for backward compat |
-| Recovery/Behavior server | `recoveries_server` + `recovery_plugins` | **Renamed**: `behavior_server` + `behavior_plugins` | `behavior_server` (same as Jazzy) |
-| Recovery plugin namespace | `nav2_recoveries/` | **Changed**: `nav2_behaviors/` | `nav2_behaviors/` |
+| Behavior server | `behavior_server` + `behavior_plugins` (**renamed in Humble** — pre-Humble used `recoveries_server` + `recovery_plugins`) | `behavior_server` (same as Humble) | `behavior_server` (same as Humble) |
+| Behavior plugin namespace | `nav2_behaviors/` (**renamed in Humble** — pre-Humble used `nav2_recoveries/`) | `nav2_behaviors/` | `nav2_behaviors/` |
 | Docking server | Not available | **New**: `docking_server` | Enhanced: non-charging docks, RViz panel |
 | Route server | Not available | Not available | **New**: graph-based route planning |
 | Loopback simulator | Not available | Not available | **New**: `nav2_loopback_sim` (no Gazebo needed) |
@@ -74,7 +75,8 @@
 
 **Migration path:**
 
-- **Humble → Jazzy**: Rename `recoveries_server`→`behavior_server`, `recovery_plugins`→`behavior_plugins`, update plugin namespaces from `nav2_recoveries/`→`nav2_behaviors/`, migrate BT XMLs if using custom v3 syntax
+- **Galactic → Humble**: Rename `recoveries_server`→`behavior_server`, `recovery_plugins`→`behavior_plugins`, and plugin namespaces `nav2_recoveries/`→`nav2_behaviors/`. Configs copied from pre-Humble examples silently break on Humble: `nav2_recoveries` does not exist there.
+- **Humble → Jazzy**: Migrate custom BT XMLs if they use BT.CPP v3 syntax (v3 → v4 transition)
 - **Jazzy → Kilted**: Set `enable_stamped_cmd_vel: true` on robot subscriber (or it won't receive cmd_vel), replace `error_code_names` with `error_code_name_prefixes`, migrate plugins to `nav2::LifecycleNode` with factory methods
 
 ### Minimal Nav2 launch
@@ -315,6 +317,11 @@ NavigateRecovery
     └── BackUp
 ```
 
+Note: the stock BT includes **motion recoveries** (Spin, BackUp). Before
+deploying it on a real robot, read the recovery escalation ladder in
+section 7 — motion recoveries should stay disabled until validated on the
+actual platform.
+
 ### Custom behavior tree
 
 ```xml
@@ -331,13 +338,17 @@ NavigateRecovery
       <ReactiveFallback name="RecoveryFallback">
         <GoalUpdated/>
         <SequenceStar>
-          <ClearEntireCostmap name="ClearGlobalCostmap"
-            service_name="global_costmap/clear_entirely_global_costmap"/>
+          <Wait wait_duration="5"/>
           <ClearEntireCostmap name="ClearLocalCostmap"
             service_name="local_costmap/clear_entirely_local_costmap"/>
+          <ClearEntireCostmap name="ClearGlobalCostmap"
+            service_name="global_costmap/clear_entirely_global_costmap"/>
+          <!-- Motion recoveries are opt-in. Enable ONLY after validating
+               robot geometry, locomotion response, and clearance at the
+               stuck locations (see the recovery escalation ladder, sec. 7):
           <Spin spin_dist="1.57"/>
-          <Wait wait_duration="5"/>
           <BackUp backup_dist="0.30" backup_speed="0.05"/>
+          -->
         </SequenceStar>
       </ReactiveFallback>
     </RecoveryNode>
@@ -350,9 +361,10 @@ NavigateRecovery
 ```yaml
 bt_navigator:
   ros__parameters:
-    default_bt_xml_filename: ""  # Uses built-in default
-    # Or specify custom:
-    # default_bt_xml_filename: /path/to/my_nav_bt.xml
+    # Galactic+ (including Humble) parameter names. Leave them unset to load
+    # the package default BT that ships with nav2_bt_navigator.
+    # default_nav_to_pose_bt_xml: /path/to/my_nav_bt.xml
+    # default_nav_through_poses_bt_xml: /path/to/my_nav_through_poses_bt.xml
     plugin_lib_names:
       - nav2_compute_path_to_pose_action_bt_node
       - nav2_follow_path_action_bt_node
@@ -364,6 +376,21 @@ bt_navigator:
       - nav2_pipeline_sequence_bt_node
       - nav2_recovery_node_bt_node
       - nav2_goal_updated_bt_node
+```
+
+**Parameter-name trap:** `default_bt_xml_filename` is the **pre-Galactic**
+(Foxy and earlier) parameter name. On Humble and newer it is not declared —
+a config that sets it is silently ignored and the robot keeps running the
+package default BT while you believe your custom tree is active. Use the
+Galactic+ names above.
+
+**Which default BT actually runs?** When the parameter is unset, the default
+tree ships with the `nav2_bt_navigator` package — on a Humble install this is
+typically `navigate_to_pose_w_replanning_and_recovery.xml`. Do not trust the
+name from memory; list the installed trees and read the one your version uses:
+
+```bash
+ls "$(ros2 pkg prefix nav2_bt_navigator)/share/nav2_bt_navigator/behavior_trees/"
 ```
 
 ## 5. Planner and controller plugins
@@ -423,39 +450,150 @@ controller_server:
       decel_lim_theta: -3.2
 ```
 
-## 6. Recovery behaviors
+## 6. Controller server internals and goal checking
+
+When a navigation failure only reproduces on the real robot ("it suddenly
+spins the wrong way", "it never finishes the final rotation"), the cause is
+often controller-server behavior that the parameter reference does not spell
+out. The behaviors below were checked against Nav2 Humble sources — but patch
+releases change details, so re-verify against **your installed version**
+(see "Source-first verification" at the end of this section) before relying
+on them for a diagnosis.
+
+### DWB minimum-speed validity is OR, not AND
+
+DWB's velocity iterator (`XYThetaIterator`, via
+`KinematicParameters::isValidSpeed`) accepts a candidate velocity when
+translational speed ≥ `min_speed_xy` **OR** |angular speed| ≥
+`min_speed_theta` — not AND. A candidate is rejected only when it fails
+*both* minimums. Consequences:
+
+- Raising `min_speed_theta` does NOT reduce the yaw candidates to a single
+  legal value: mixed candidates with enough translational speed still pass
+  through the OR branch. A diagnosis like "the only valid yaw candidate is
+  0.48 rad/s" is wrong if it assumed AND semantics.
+- When diagnosing "why did DWB pick this velocity", enumerate the sampled
+  window (`vx_samples`, `vtheta_samples`) against the OR rule instead of
+  assuming which candidates were pruned.
+
+### Goal checker reset and the stateful XY latch
+
+- The controller server owns the goal-checker plugins. In the Humble sources
+  verified for this guide, the selected goal checker is **reset when a new
+  `FollowPath` action goal starts**. If your BT replaces the FollowPath goal
+  while replanning, that reset repeats with every replacement.
+- `SimpleGoalChecker` is **stateful** by default (`stateful: true`): once the
+  XY tolerance is met it latches and only checks yaw afterwards, so the robot
+  may drift outside `xy_goal_tolerance` while finishing the final rotation.
+  Every goal-checker reset clears that latch.
+- The combination — a replanning BT that replaces FollowPath goals plus a
+  latch that each replacement clears — shows up on hardware as a robot that
+  repeatedly re-approaches the XY goal and never settles the final yaw.
+  Confirm on your installed version whether goal replacement occurs and
+  whether the latch survives it before tuning tolerances around the symptom.
+
+### RotationShim hands off the final yaw
+
+`RotationShimController`'s primary role is aligning the **initial** heading of
+a newly received path: it rotates until the heading error drops below
+`angular_dist_threshold`, then hands control to the primary controller. Do
+not assume it also completes the final goal yaw — that responsibility sits
+with the primary controller and the goal checker. Options differ between
+releases (some add goal-heading behavior), so confirm on your installed
+version which component owns the last rotation before tuning it.
+
+### Verify what actually reaches the hardware
+
+The command a controller computes is not the command the robot executes.
+Trace the full output pipeline:
+
+```text
+controller plugin
+  → controller_server output topic
+  → velocity_smoother        (accel/decel limits, deadband)
+  → collision monitor / twist mux
+  → vendor bridge / SDK driver
+  → hardware command
+```
+
+When motion doesn't match expectation, echo the input and output topic of
+each stage and compare both values and timestamps:
+
+```bash
+ros2 topic echo /cmd_vel_nav --once   # controller output (topic names vary per bringup)
+ros2 topic echo /cmd_vel --once       # after smoother / collision monitor
+ros2 topic info /cmd_vel -v           # who actually publishes and subscribes
+```
+
+This separates "Nav2 commanded this rotation" from "a downstream stage
+transformed the rotation" — two failures with identical symptoms and
+different fixes.
+
+### Source-first verification
+
+Distro labels are not enough when exact behavior matters. Before asserting
+how *your* Nav2 behaves, identify the installed version and read the
+artifacts that ship with it:
+
+```bash
+ros2 pkg prefix nav2_bringup           # install prefix
+ros2 pkg xml nav2_bringup              # read the <version> element
+dpkg-query -W 'ros-humble-nav2-*'      # package versions on apt-based installs
+```
+
+Then check the installed files, not the docs you remember:
+
+- Reference params: `/opt/ros/<distro>/share/nav2_bringup/params/nav2_params.yaml`
+- Default behavior trees: `$(ros2 pkg prefix nav2_bt_navigator)/share/nav2_bt_navigator/behavior_trees/`
+- Installed headers under `/opt/ros/<distro>/include/`, and for exact logic
+  the GitHub source at the tag matching the installed version.
+
+## 7. Recovery behaviors
 
 ```yaml
-# Jazzy+: behavior_server (renamed from recoveries_server)
+# Humble and newer: behavior_server + behavior_plugins.
+# (Pre-Humble Nav2 examples use legacy naming that does not exist on Humble.)
 behavior_server:
   ros__parameters:
-    behavior_plugins: ["spin", "backup", "wait"]
+    behavior_plugins: ["wait", "spin", "backup"]
+    wait:
+      plugin: "nav2_behaviors/Wait"
+    # Motion behaviors: declare them, but keep them out of your BT's
+    # recovery sequence until validated on the actual robot (see below).
     spin:
       plugin: "nav2_behaviors/Spin"
     backup:
       plugin: "nav2_behaviors/BackUp"
-    wait:
-      plugin: "nav2_behaviors/Wait"
-
-# Humble: recoveries_server
-recoveries_server:
-  ros__parameters:
-    recovery_plugins: ["spin", "backup", "wait"]
-    spin:
-      plugin: "nav2_recoveries/Spin"
-    backup:
-      plugin: "nav2_recoveries/BackUp"
-    wait:
-      plugin: "nav2_recoveries/Wait"
 ```
 
-**Custom recovery sequence:**
+### Recovery escalation ladder — actuation-free first
 
-1. Clear costmaps (remove phantom obstacles)
-2. Wait 5 seconds (let dynamic obstacles pass)
-3. Spin 180° (look for alternative paths)
-4. Back up 0.3 m (escape tight spaces)
-5. Replan
+Choose recoveries in escalating order of risk. Motion recoveries are a
+last resort, not a default.
+
+1. **Wait / re-sense** — no actuation; lets dynamic obstacles pass and
+   sensors re-observe the scene.
+2. **Targeted costmap clearing** (`ClearCostmapExceptRegion`, or resetting a
+   specific layer) — no actuation, but **not automatically safe**: clearing
+   can erase *real* obstacles, and the next plan may drive through where
+   they were. Only clear what the robot can re-observe before traversing.
+3. **Full costmap clear** — same caveat with a larger blast radius.
+4. **Motion recoveries** (`Spin`, `BackUp`, `DriveOnHeading`) — commanded
+   movement at exactly the moment the planner is already confused. Keep
+   disabled until validated with the checklist below.
+
+**Before enabling Spin/BackUp on a real robot, verify:**
+
+- Robot geometry — does the platform actually rotate in place within its
+  footprint? Legged robots sweep more than their static footprint.
+- Locomotion response — how does the gait react to a pure rotation command
+  at the commanded rate?
+- Clearance at the locations where the robot actually gets stuck.
+- `spin_dist` / `backup_dist` / `backup_speed` against measured clearance.
+
+A stock `+1.57 rad` Spin executed on an unvalidated quadruped is a known
+field failure: the operator sees the robot "suddenly rotate in a random
+direction" — the recovery behavior, not path following, was the fault.
 
 ### Dynamic obstacle handling
 
@@ -514,7 +652,7 @@ collision_monitor:
       topic: "/scan"
 ```
 
-## 7. Waypoint following
+## 8. Waypoint following
 
 ### Sending waypoints programmatically (Python)
 
@@ -571,7 +709,7 @@ waypoint_follower:
       waypoint_pause_duration: 200  # ms to pause at each waypoint
 ```
 
-## 8. Multi-robot navigation
+## 9. Multi-robot navigation
 
 ### Namespace isolation
 
@@ -610,7 +748,7 @@ The key is fusing GPS (lat/lon) into the Nav2 coordinate system via `robot_local
 
 For multi-robot navigation patterns including fleet management and Open-RMF integration, see `references/multi-robot.md`.
 
-## 9. Parameter tuning methodology
+## 10. Parameter tuning methodology
 
 ### Step-by-step tuning workflow
 
@@ -629,7 +767,9 @@ For multi-robot navigation patterns including fleet management and Open-RMF inte
 
 4. **Recovery:** Handle edge cases
    - Test in narrow passages, dead ends, dynamic obstacles
-   - Tune spin distance and backup distance for your robot
+   - Start with actuation-free recoveries only (section 7); validate robot
+     geometry and clearance before enabling Spin/BackUp, then tune
+     `spin_dist`/`backup_dist` from measured clearance
 
 ### Goal tolerance and oscillation
 
@@ -640,13 +780,41 @@ loops.
 
 **Rules:**
 
-- `xy_goal_tolerance` should be ≥ `max_vel_x / controller_frequency` (minimum
-  stopping distance at max speed). E.g., 0.5 m/s at 20 Hz → tolerance ≥ 0.025 m.
+- Sanity floor: `max_vel_x / controller_frequency` is the distance traveled
+  in **one control tick** (0.5 m/s at 20 Hz → 0.025 m). `xy_goal_tolerance`
+  below that cannot work — but this is NOT a stopping distance.
+- Baseline stopping-distance estimate (lower-bound model assuming ideal
+  constant deceleration): `d ≈ v² / (2·|decel_limit|) + v·t_latency`. Real
+  robots stop in a *longer* distance — add command transport latency, the
+  velocity smoother's output period, gait-phase delay before deceleration
+  actually starts (legged robots), state-estimation latency, command
+  deadband/quantization, floor friction and slope, vendor-controller rate
+  limits, and collision-monitor processing latency. Calibrate with a
+  measured stopping test at operational speed, then size `xy_goal_tolerance`
+  and collision-monitor polygons from the *measured* value.
 - If using `RegulatedPurePursuitController`, its `regulated_linear_scaling_min_speed`
   reduces speed near goals, allowing tighter tolerances.
 - Set `yaw_goal_tolerance` generously (0.1–0.3 rad) unless orientation matters.
 - If the robot stops, rotates, overshoots, repeats — increase tolerances or reduce
   `max_vel_theta`.
+
+### Hardware limits vs operational limits
+
+The velocity range the SDK *accepts* is not the velocity Nav2 should
+*command*. Derive `max_vel_*` from a chain of distinct numbers — measure
+each one instead of copying the spec sheet:
+
+| # | Quantity | Source |
+|---|---|---|
+| 1 | SDK / API absolute input range | Vendor API docs — a hard clamp, not a target |
+| 2 | Actuation onset threshold | Measured — smallest command that produces real motion (gait start on legged robots) |
+| 3 | Safe operational ceiling | Site risk assessment — environment, payload, clearance |
+| 4 | Smoother accel/decel limits | `velocity_smoother` config — bounds how fast commands change |
+| 5 | Speed after collision slowdown | Collision monitor `slowdown_ratio` applied to (3) |
+| 6 | Measured braking distance & inertia | Stopping test at operational speed |
+
+Set Nav2's `max_vel_x` / `max_vel_theta` from (3), never from (1). A ±4 rad/s
+API range does not mean the robot is controllable — or safe — at 4 rad/s.
 
 ### Key parameters to tune first
 
@@ -654,11 +822,11 @@ loops.
 |---|---|---|
 | `robot_radius` | Collision boundary | Actual radius + 0.05 m |
 | `inflation_radius` | Safe distance | `robot_radius` + 0.15 m |
-| `max_vel_x` | Maximum speed | 50% of hardware max |
+| `max_vel_x` | Maximum speed | Safe operational ceiling (well below SDK max — see above) |
 | `controller_frequency` | Path tracking update rate | 20 Hz |
 | `planner_frequency` | Replanning rate | 1 Hz |
 
-## 10. Common failures and fixes
+## 11. Common failures and fixes
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -669,7 +837,9 @@ loops.
 | "Planning failed" | Start or goal pose inside an obstacle in costmap | Clear costmaps, check sensor data, adjust obstacle layer params |
 | Costmap shows phantom obstacles | Stale sensor data or wrong TF | Check sensor topic rate, verify TF timestamps |
 | Robot takes very long paths | Costmap inflation too high | Reduce `cost_scaling_factor` (higher value = cost drops faster) |
-| Recovery spin doesn't complete | Insufficient space to rotate | Reduce `spin_dist`, or add `BackUp` before `Spin` in BT |
+| Recovery spin doesn't complete | Insufficient space to rotate | Re-measure clearance and reduce `spin_dist` — or disable motion recoveries per the escalation ladder (section 7) |
+| Robot suddenly rotates in place mid-mission | Recovery `Spin` triggered (stock BT enables motion recoveries) | Check behavior server logs for recovery activation; keep motion recoveries opt-in until validated (section 7) |
+| Robot re-approaches goal, final yaw never settles | Stateful goal-checker XY latch cleared when the BT replaces the FollowPath goal during replanning | See section 6 — verify goal-checker reset behavior on your installed version; widen `xy_goal_tolerance` or adjust BT replanning |
 | Robot oscillates at goal | Goal tolerance too tight for speed/inertia | Increase `xy_goal_tolerance`, reduce `max_vel_theta` near goal |
 | Ghost obstacles in costmap | Fast-moving people/objects leave stale marks | Reduce `obstacle_max_range`, increase `update_frequency`, use VoxelLayer |
 | Collision monitor stops robot unexpectedly | Stop polygon too large for robot | Shrink `PolygonStop` points to match actual footprint + small margin |
