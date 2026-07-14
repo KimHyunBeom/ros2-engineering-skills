@@ -7,10 +7,14 @@ These tests ensure the skill conforms to Skills 2.0 requirements:
 4. version follows semver
 5. hooks are properly declared
 6. evals are properly structured
+7. every release-version surface carries the same version
 """
 
+import json
 import os
 import re
+import subprocess
+import sys
 
 import yaml
 
@@ -394,3 +398,55 @@ class TestSkillMdSizeBudget:
             assert must in debugging, (
                 f'debugging.md is missing CLI reference command: {must!r}'
             )
+
+
+class TestVersionConsistency:
+    """All release metadata and hook output surfaces represent the skill
+    release version and must be updated together. A drifting copy (as
+    happened when the hooks reported 1.1.0 after the skill moved to 1.2.0)
+    makes logs and bug reports ambiguous about what actually ran — do not
+    delete this check; extend it when a new version surface is added.
+    """
+
+    def _skill_md_version(self):
+        return str(_parse_frontmatter(SKILL_MD)['version'])
+
+    def _eval_yaml_version(self):
+        path = os.path.join(SKILL_ROOT, 'evals', 'eval.yaml')
+        with open(path, 'r', encoding='utf-8') as fh:
+            return str(yaml.safe_load(fh)['version'])
+
+    def _marketplace_version(self):
+        path = os.path.join(SKILL_ROOT, '.claude-plugin', 'marketplace.json')
+        with open(path, 'r', encoding='utf-8') as fh:
+            return str(json.load(fh)['metadata']['version'])
+
+    def _hook_reported_version(self, script, tmp_path, extra_args=()):
+        result = subprocess.run(
+            [sys.executable, os.path.join(SKILL_ROOT, 'scripts', script),
+             *extra_args],
+            capture_output=True, text=True,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, 'SKILL_WORKSPACE': str(tmp_path)},
+            timeout=10,
+        )
+        return str(json.loads(result.stdout)['version'])
+
+    def test_all_version_surfaces_match(self, tmp_path):
+        reference = self._skill_md_version()
+        surfaces = {
+            'SKILL.md frontmatter': reference,
+            'evals/eval.yaml': self._eval_yaml_version(),
+            '.claude-plugin/marketplace.json': self._marketplace_version(),
+            'skill_stop_hook.py output': self._hook_reported_version(
+                'skill_stop_hook.py', tmp_path),
+            'skill_validate_hook.py output': self._hook_reported_version(
+                'skill_validate_hook.py', tmp_path,
+                extra_args=('--command', 'ros2 topic list')),
+        }
+        mismatched = {name: v for name, v in surfaces.items()
+                      if v != reference}
+        assert not mismatched, (
+            f'Version surfaces out of sync with SKILL.md '
+            f'({reference}): {mismatched}'
+        )
