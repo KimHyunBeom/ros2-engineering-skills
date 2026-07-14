@@ -11,6 +11,10 @@ skills/
 .claude/
 .skill-runs.log
 
+# Local virtual environments
+.venv/
+venv/
+
 # Testing artifacts
 .coverage
 coverage.xml
