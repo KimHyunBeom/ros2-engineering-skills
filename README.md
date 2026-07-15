@@ -247,7 +247,7 @@ ros2-engineering-skills/
 | **Automated tests** | Hooks, frontmatter, eval definitions, script behavior (unit + property-based Hypothesis + CLI + integration), and selected documentation regressions |
 | **Quality gates** | `pytest --cov=scripts --cov-fail-under=90`; flake8 + mypy clean |
 | **Real-world Evals** | **Validated empirically on WSL (Ubuntu 24.04 + ROS 2 Jazzy)** for SROS2, micro-ROS `rclc`, and Multi-robot fleet scenarios. The `eval_runner.py` performs *structural* checks on prompt/expected fixtures (keyword coverage of declared criteria); model-output quality is evaluated outside this runner. |
-| **5 CI jobs** | Lint (flake8 + mypy + pip-audit), unit-tests (py 3.10/3.11/3.12 matrix), ros2-integration (humble/jazzy/rolling Docker matrix), markdown-lint, lint-scripts |
+| **5 CI jobs** | Lint (flake8 + mypy + pip-audit), unit-tests (py 3.10/3.11/3.12 matrix), ros2-integration (humble/jazzy/kilted/lyrical/rolling Docker matrix), markdown-lint, lint-scripts |
 
 ## Supported ROS 2 distributions
 
@@ -255,11 +255,15 @@ This skill is designed to work **on a complete, internally consistent ROS 2
 installation**. The matrix below describes what "complete" means per distro,
 and which combinations are CI-verified end-to-end.
 
+Use **Lyrical** on its primary Ubuntu 26.04 platform. Use **Jazzy** for
+Ubuntu 24.04 deployments. **Humble** remains supported for Ubuntu 22.04.
+
 | Distro | Status | CI verification | Notes |
 |---|---|---|---|
-| **Jazzy Jalisco** (LTS) | Primary target — recommended | Full pipeline (lint → unit → docker build → colcon test → smoke) | All scripts, scaffolds, and references default to Jazzy idioms |
-| **Humble Hawksbill** (LTS) | Fully supported | Full pipeline | Distro-aware code paths handle 22.04 / older rosidl / pre-`HardwareComponentInterfaceParams` API |
-| **Kilted Kaiju** (non-LTS, May 2025) | Reference-supported | Not in docker matrix (no `osrf/ros:kilted-desktop` image) | Zenoh Tier 1, EventsExecutor stable — references document the deltas |
+| **Lyrical Luth** (LTS, May 2026) | Recommended for Ubuntu 26.04 | Full pipeline (lint → unit → docker build → colcon test → smoke) | EventsCBGExecutor, ros2_control 6.x — references document the deltas |
+| **Jazzy Jalisco** (LTS) | Recommended for Ubuntu 24.04 | Full pipeline (lint → unit → docker build → colcon test → smoke) | Scripts and scaffolds are CI-verified against Jazzy idioms |
+| **Humble Hawksbill** (LTS) | Fully supported (Ubuntu 22.04) | Full pipeline | Distro-aware code paths handle 22.04 / older rosidl / pre-`HardwareComponentInterfaceParams` API |
+| **Kilted Kaiju** (non-LTS, May 2025, EOL Dec 2026) | Reference-supported | Full pipeline | Zenoh Tier 1, experimental EventsExecutor rclpy port — references document the deltas |
 | **Rolling Ridley** | CI-verified via source overlay of broken upstream packages | Full pipeline (rolling-only stage in Dockerfile) | See **Rolling caveat** below |
 | **Foxy Fitzroy** (LTS, EOL June 2023) | Migration reference only | Not built | Documented for upgrade paths only |
 
@@ -291,9 +295,9 @@ For your own deployments on rolling, the same approach applies — clone
 the `rosidl*`/`control_msgs`/`ros2_control` source trees and overlay
 them with `colcon build --merge-install`.
 
-For production work, **pick an LTS (Humble or Jazzy)**. Use rolling
-only when you specifically need a feature that has not yet landed in
-an LTS.
+For production work, **pick an LTS** — Lyrical on Ubuntu 26.04, Jazzy on
+Ubuntu 24.04, Humble on Ubuntu 22.04. Use rolling only when you
+specifically need a feature that has not yet landed in an LTS.
 
 ## Contributing
 
@@ -303,7 +307,8 @@ Contributions welcome. Please:
 2. Include working code examples, not pseudocode
 3. Document anti-patterns alongside correct patterns
 4. Note which ROS 2 distros your change applies to
-5. Run `flake8 scripts/ tests/` and `mypy scripts/` before submitting
+5. Install the dev dependencies (`pip install -r requirements-dev.txt`),
+   then run `flake8 scripts/ tests/` and `mypy scripts/` before submitting
 6. Ensure `pytest tests/ --cov=scripts --cov-fail-under=90` passes
 7. Test with at least one agent (Claude Code, Codex, etc.)
 

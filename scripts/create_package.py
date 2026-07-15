@@ -773,7 +773,7 @@ find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 
-# Detect ros2_control API (rolling 6.x changed on_init signature)
+# Detect ros2_control API (Lyrical/Rolling 6.x changed on_init signature)
 if(hardware_interface_VERSION VERSION_GREATER_EQUAL "6.0.0")
   add_definitions(-DHARDWARE_INTERFACE_HAS_PARAMS_API)
 endif()
@@ -833,7 +833,7 @@ ament_package()
 namespace {name}
 {{
 
-// Type alias for cross-distro compatibility (rolling 6.x API change)
+// Type alias for cross-distro compatibility (Lyrical/Rolling 6.x API change)
 #ifdef HARDWARE_INTERFACE_HAS_PARAMS_API
 using OnInitArgType = hardware_interface::HardwareComponentInterfaceParams;
 #else

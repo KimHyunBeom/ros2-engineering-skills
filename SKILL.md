@@ -120,9 +120,9 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 
 ### 1. Distro awareness
 
-<!-- LAST_UPDATED: 2026-03-30 — Review this table every 6 months or when a new distro is released. -->
-<!-- NEXT_REVIEW: 2026-09-30 -->
-> **Staleness warning:** The table below was last verified on **2026-03-30**.
+<!-- LAST_UPDATED: 2026-07-15 — Review this table every 6 months or when a new distro is released. -->
+<!-- NEXT_REVIEW: 2027-01-15 -->
+> **Staleness warning:** The table below was last verified on **2026-07-15**.
 > If the current date is more than 6 months past that, re-verify EOL dates and
 > feature support against https://docs.ros.org/en/rolling/Releases.html before
 > relying on this table. When you update it, change both `LAST_UPDATED` and
@@ -130,20 +130,27 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 
 Always ask which ROS 2 distribution the user targets. Key differences:
 
-| Feature                   | Foxy (**EOL**)       | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Rolling            |
-|---------------------------|----------------------|--------------------|--------------------|--------------------|--------------------|
-| EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Nov 2025           | Rolling            |
-| Ubuntu                    | 20.04               | 22.04              | 24.04              | 24.04              | Latest             |
-| Default DDS               | Fast DDS             | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           |
-| Zenoh support             | —                    | —                  | —                  | Tier 1             | Tier 1             |
-| Type description support  | No                   | No                 | Yes                | Yes                | Yes                |
-| Service introspection     | No                   | No                 | Yes                | Yes                | Yes                |
-| EventsExecutor            | No                   | No                 | Experimental       | Stable (+ rclpy)   | Stable (+ rclpy)   |
-| Default bag format        | sqlite3              | sqlite3            | MCAP               | MCAP               | MCAP               |
-| ros2_control interface    | N/A (separate)       | 2.x                | 4.x                | 4.x                | Latest             |
-| CMake recommendation      | ament_target_deps    | ament_target_deps  | either             | target_link_libs   | target_link_libs   |
+| Feature                   | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Lyrical (LTS)      | Rolling            |
+|---------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
+| EOL                       | May 2027           | May 2029           | Dec 2026           | May 2031           | Rolling            |
+| Ubuntu                    | 22.04              | 24.04              | 24.04              | 26.04              | Latest             |
+| Default DDS               | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           |
+| Zenoh support             | —                  | —                  | Tier 1             | Tier 1             | Tier 1             |
+| Type description support  | No                 | Yes                | Yes                | Yes                | Yes                |
+| Service introspection     | No                 | Yes                | Yes                | Yes                | Yes                |
+| EventsExecutor            | No                 | Experimental       | Experimental (+ rclpy port) | EventsCBGExecutor (non-experimental, rclcpp) | Verify installed rclcpp |
+| Default bag format        | sqlite3            | MCAP               | MCAP               | MCAP               | MCAP               |
+| ros2_control interface    | 2.x                | 4.x                | 5.x                | 6.x (verify installed) | Latest         |
+| CMake recommendation      | ament_target_deps  | either             | target_link_libs   | target_link_libs   | target_link_libs   |
 
-When the user does not specify, default to the latest LTS (Jazzy).
+Foxy (EOL June 2023, Ubuntu 20.04, ros2_control not bundled) is a migration
+reference only — see the migration notes below. The pre-Lyrical
+`EventsExecutor` lives in the `rclcpp::experimental` namespace on every
+release that ships it; Lyrical adds the separate, non-experimental
+`rclcpp::executors::EventsCBGExecutor`.
+
+When the user does not specify, default to the latest LTS — **Lyrical Luth**
+(Ubuntu 26.04); use **Jazzy** when the target platform is Ubuntu 24.04.
 Pin the exact distro in Dockerfile, CI, and documentation so builds are reproducible.
 
 ### 2. C++ vs Python decision
@@ -157,10 +164,19 @@ the latency-critical path.
 
 **Mixed stacks are normal.** A typical robot has C++ drivers/controllers and Python
 orchestration/monitoring. Note: `component_container` (composition) only loads
-C++ components via pluginlib. Python nodes run as separate processes, but can
-share a launch file and communicate via zero-overhead intra-host DDS.
-Intra-process zero-copy works for any nodes sharing a process with
-`use_intra_process_comms(true)` — not only composable components.
+C++ components via pluginlib. Python nodes run as separate processes and
+communicate over intra-host DDS — **not zero-overhead by default**: the
+standard inter-process transport pays serialization, copies, and transport
+bandwidth, and splitting work into another process does not by itself remove
+encoding costs. Copy avoidance has three distinct mechanisms with different
+preconditions: (1) the rclcpp **intra-process** path
+(`use_intra_process_comms(true)`, same process) avoids copies only depending
+on publish ownership (`unique_ptr`), callback type, subscriber count, and
+QoS; (2) **loaned messages / vendor shared memory (SHM/PSMX)** are RMW- and
+vendor-dependent and can avoid some or all copies when their preconditions
+hold; (3) separate processes on the standard DDS transport get no copy
+avoidance — crossing processes without copies requires the vendor
+mechanisms in (2). Details: `references/nodes-executors.md`.
 
 ### 3. Package structure conventions
 
@@ -234,16 +250,32 @@ stale data). See `references/communication.md` section 9 for full API and exampl
   shared state without locks, but limits throughput.
 - A `ReentrantCallbackGroup` allows parallel execution — you must protect
   shared state with `std::mutex` (C++) or `threading.Lock` (Python).
-- **Calling a service from a callback:** The service client **must** be in a
-  separate `MutuallyExclusiveCallbackGroup` from the calling callback. Otherwise
-  the executor deadlocks — the callback waits for the response while the executor
-  cannot deliver it. Always use `async_send_request` with a response callback;
-  never use `spin_until_future_complete` inside an executor callback.
+- **Calling a service from a callback:** If the callback registers the
+  request asynchronously — rclcpp: `async_send_request(request, response_callback)`;
+  rclpy: `future = client.call_async(request)` then
+  `future.add_done_callback(...)` — and **returns without waiting for the
+  result**, the same `MutuallyExclusiveCallbackGroup` does not deadlock.
+  Deadlock comes from **waiting synchronously inside the callback** —
+  rclcpp: calling `get()`/`wait()`/`wait_for()` on a **not-yet-complete**
+  future from the initiating callback, or `spin_until_future_complete`
+  (inside the response callback the future is already complete, so `get()`
+  there is safe — the examples use exactly that); rclpy: synchronous
+  `Client.call()`, `spin_until_future_complete`, or a loop that blocks
+  until `future.done()`. (rclpy's `future.result()` by itself does not
+  block — it immediately returns whatever result is currently stored,
+  which may be unset.) A synchronous wait needs the
+  client in a different callback group or a `ReentrantCallbackGroup`, plus
+  a matching executor configuration (e.g. `MultiThreadedExecutor`). Do not assume plain-executor
+  `async def` callback patterns are safe until tested with your executor;
+  Lyrical's `rclpy.experimental.AsyncNode` is a separate execution model
+  that officially supports `await client.call(...)` inside callbacks.
 - Never do blocking work (file I/O, long computation, `sleep`) inside a
   timer or subscription callback on the default executor. Offload to a
   dedicated thread or use a `MultiThreadedExecutor` with a reentrant group.
 - In rclcpp, prefer `std::shared_ptr<const MessageT>` in subscription
-  callbacks to avoid unnecessary copies and enable zero-copy intra-process.
+  callbacks to avoid unnecessary copies; whether intra-process delivery is
+  actually copy-free additionally depends on publish ownership, subscriber
+  count, and QoS (Principle 2).
 
 ### 9. Lifecycle-first design
 
@@ -302,8 +334,8 @@ Details: `references/navigation.md` sections 7 and 10.
 | Ignoring QoS compatibility | Silent communication failure | Match publisher/subscriber QoS or check with `ros2 topic info -v` |
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
 | Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
-| Service client in same callback group as caller | Deadlocks even with async in `MultiThreadedExecutor` | Put service client in a separate `MutuallyExclusiveCallbackGroup` |
-| No safe command on shutdown | Motors hold last velocity after node exits | Send zero-velocity in `on_deactivate` AND destructor (see `references/hardware-interface.md`) |
+| Waiting on a service future inside a callback | Synchronous waiting deadlocks a `MutuallyExclusiveCallbackGroup`; registering a response callback and returning is safe even in the same group | Return without waiting; if a synchronous wait is unavoidable, put the client in a different group (or reentrant) with a `MultiThreadedExecutor` |
+| No safe command on shutdown | Motors hold last velocity after node exits | Send zero-velocity in `on_deactivate` and the destructor as best-effort hygiene; crash safety needs a downstream command timeout/watchdog (`references/safety-estop.md`) |
 | Dynamic subscriptions with `StaticSingleThreadedExecutor` | New subs are never picked up after `spin()` | Use `SingleThreadedExecutor` or `MultiThreadedExecutor` for dynamic entities |
 | CPU frequency governor left on `powersave`/`ondemand` | 10-100 ms latency spikes in RT path | Set `performance` governor, disable turbo boost (see `references/realtime.md`) |
 
@@ -314,14 +346,14 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 
 | # | Pitfall | What goes wrong | Correct approach |
 |---|---------|----------------|-----------------|
-| 1 | Using `spin_until_future_complete` inside a callback | Deadlocks the executor — the callback blocks waiting for a response that can never be delivered | Use `async_send_request` with a response callback; put the service client in a separate `MutuallyExclusiveCallbackGroup` |
+| 1 | Using `spin_until_future_complete` inside a callback | Deadlocks the executor — the callback blocks waiting for a response that can never be delivered | Register a response callback and return without waiting; a separate callback group (or reentrant + `MultiThreadedExecutor`) is needed only when a synchronous wait is unavoidable |
 | 2 | Generating Foxy-era API for Jazzy/Kilted | `node_executable` is deprecated, `export_state_interfaces()` signature changed in ros2_control 4.x | Always check the distro feature matrix above before generating code |
 | 3 | Omitting QoS in publisher/subscriber creation | Defaults silently mismatch — publisher sends but subscriber receives nothing | Always specify QoS explicitly; use the QoS defaults table in Principle 6 |
 | 4 | Creating a `msg/` directory inside a non-interfaces package | Builds locally but fails in CI — interface packages need `rosidl_generate_interfaces` | Put messages in a dedicated `*_interfaces` package |
 | 5 | Hardcoding `/opt/ros/humble/` paths in launch files | Breaks on any other distro or install prefix | Use `FindPackageShare`, `PathJoinSubstitution`, or environment substitutions |
 | 6 | Forgetting `<depend>` tags in `package.xml` | `colcon build` works in overlay but `rosdep install` and Docker builds fail | Declare every `find_package()` / `import` as `<depend>` in package.xml |
 | 7 | Using `time.sleep()` for rate control in rclpy | Blocks the executor thread; timers and subscriptions stop firing | Use `create_timer()` or `Rate` with a `MultiThreadedExecutor` |
-| 8 | Not sending zero-velocity on deactivate/shutdown | Robot holds last commanded velocity when the node crashes | Send zero-command in both `on_deactivate` and the destructor |
+| 8 | Treating process-side cleanup as crash safety | Destructors never run on SIGKILL/power loss and are not guaranteed on segfaults — the robot keeps its last command | Zero-command in `on_deactivate` + destructor is best-effort hygiene only; require a downstream command timeout, heartbeat/watchdog, and hardware e-stop (`references/safety-estop.md`) |
 | 9 | Mixing `ament_target_dependencies()` and `target_link_libraries()` | Kilted deprecated `ament_target_dependencies` — mixing causes link errors | Use `target_link_libraries()` with modern CMake targets for Kilted+; `ament_target_dependencies()` for Humble/Jazzy |
 | 10 | Generating `rospy` / `roscpp` code instead of `rclpy` / `rclcpp` | ROS 1 patterns in a ROS 2 context — nothing compiles | This skill is ROS 2 only — always use `rclpy`/`rclcpp` APIs |
 | 11 | Ignoring `use_sim_time` parameter in simulation | Real clock diverges from Gazebo clock — tf lookups fail, controllers drift | Set `use_sim_time:=true` in launch and pass `--clock` to `ros2 bag play` |
@@ -350,9 +382,14 @@ When upgrading between distributions, check these breaking changes first:
   replaces `ROS_LOCALHOST_ONLY`; `launch_ros` parameter handling changed — retest
   launch files.
 - **Jazzy → Kilted (non-LTS):** Zenoh Tier 1 (`RMW_IMPLEMENTATION=rmw_zenoh_cpp`);
-  EventsExecutor stable in rclcpp and rclpy; `ament_target_dependencies()` deprecated —
-  use `target_link_libraries()` with modern CMake targets; Gazebo pairing is **Ionic**
-  (Harmonic was Jazzy); multi-bag replay in `ros2 bag play`.
+  experimental EventsExecutor gains an rclpy port (still `rclcpp::experimental`);
+  `ament_target_dependencies()` deprecated — use `target_link_libraries()` with modern
+  CMake targets; Gazebo pairing is **Ionic** (Harmonic was Jazzy); multi-bag replay in
+  `ros2 bag play`.
+- **Kilted → Lyrical (LTS):** primary platform moves to Ubuntu 26.04; default RMW
+  stays `rmw_fastrtps_cpp`; new non-experimental `rclcpp::executors::EventsCBGExecutor`
+  (distinct from the experimental EventsExecutor); ros2_control moves to the 6.x
+  series — verify per-package changes against the installed versions (Principle 11).
 - **ROS 1 → ROS 2:** see `references/migration-ros1.md` for a step-by-step strategy.
 
 ## Quick reference — ros2 CLI

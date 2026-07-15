@@ -30,7 +30,24 @@ import re
 import sys
 import time
 
-import yaml  # type: ignore[import-untyped]
+
+def _import_yaml():
+    """Import PyYAML lazily, only on the execution path that needs it.
+
+    Importing (or asking for --help from) this module must not require
+    PyYAML: the module is imported by the test suite and the CLI should
+    print usage on a bare environment. Only actually running evals needs
+    the dependency, so the friendly failure lives here, not at module
+    import time.
+    """
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError:
+        print('Error: PyYAML is required to run evals — install the '
+              'development dependencies first: '
+              'pip install -r requirements-dev.txt', file=sys.stderr)
+        sys.exit(2)
+    return yaml
 
 
 def load_eval_config(eval_dir):
@@ -40,8 +57,10 @@ def load_eval_config(eval_dir):
         dict: Parsed eval configuration.
 
     Raises:
-        SystemExit: If eval.yaml is missing or malformed.
+        SystemExit: If eval.yaml is missing or malformed, or PyYAML is
+            not installed.
     """
+    yaml = _import_yaml()
     config_path = os.path.join(eval_dir, 'eval.yaml')
     if not os.path.isfile(config_path):
         print(f'Error: eval.yaml not found at {config_path}', file=sys.stderr)

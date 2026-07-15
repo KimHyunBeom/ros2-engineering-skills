@@ -547,10 +547,22 @@ ros2 trace stop my_trace
 
 ### Benchmark reference numbers
 
-These are **order-of-magnitude reference numbers** from published benchmarks on
-specific hardware (Intel i7-12700, Ubuntu 24.04). Your numbers **will differ** based
-on CPU, kernel version, BIOS settings, and workload. Always benchmark on your target
-platform — never assume these numbers transfer directly.
+These are **illustrative order-of-magnitude ranges** for desktop-class x86
+hardware — not sourced measurements. For continuously published, per-system
+cyclictest data (with the exact command and measurement duration per plot),
+see the [OSADL QA Farm](https://www.osadl.org/Continuous-latency-monitoring.qa-farm-monitoring.0.html);
+for histogram interpretation, the
+[Linux Foundation cyclictest guide](https://wiki.linuxfoundation.org/realtime/documentation/howto/tools/cyclictest/start).
+Your numbers **will differ** based on CPU, kernel version, BIOS settings, and
+workload. Measure on your target platform under representative load:
+
+```bash
+sudo cyclictest -m -S -p 90 -i 1000 -h 20000 -D 10m -q > histogram.txt
+```
+
+The p99.9 is the histogram bin where the cumulative sample count reaches
+99.9% of the total. If cyclictest reports samples above the 20 ms histogram
+ceiling (overflows), rerun with a larger `-h`.
 
 | Metric | Without PREEMPT_RT | With PREEMPT_RT |
 |---|---|---|
@@ -558,29 +570,29 @@ platform — never assume these numbers transfer directly.
 | cyclictest avg latency | 2-5 us | 1-3 us |
 | Worst-case jitter (p99.9) | 200-2000 us | 10-20 us |
 
-DDS transport latency (loopback, **1 KB message** — small messages only):
+**DDS transport latency:** no per-vendor figures are given here — a
+universal vendor ranking cannot be asserted, and any number depends on the
+RMW version, QoS, transport, payload size, topology, and host. What holds
+generally: intra-process delivery is usually far cheaper than
+serialization-based inter-process transports, and inter-process latency
+rises steeply with payload size; vendor shared-memory/loaned-message paths
+sit in between and need their own measurement. Measure on the target
+platform with `performance_test` or `ros2_performance`, with those
+variables fixed and reported alongside the numbers
+(see `references/communication.md` §10).
 
-| Middleware | Avg latency | p99 latency |
-|---|---|---|
-| CycloneDDS | ~30-60 us | ~100-200 us |
-| FastDDS | ~40-80 us | ~150-300 us |
-| Zenoh | ~20-40 us | ~60-120 us |
-| Intra-process (zero-copy) | ~1-5 us | ~5-10 us |
-
-**Large message scaling:** For `PointCloud2` (~1.5 MB) or `Image` (~900 KB), multiply
-the above numbers by 50–100x due to serialization, fragmentation, and reassembly.
-For large messages on the RT path, intra-process or shared memory transport is
-effectively mandatory.
+**Large message scaling:** small-message numbers do not transfer to
+`PointCloud2` (~1.5 MB) or `Image` (~900 KB) — serialization, fragmentation,
+and reassembly dominate at those sizes. Measure with your actual payloads.
+For large messages on the RT path, intra-process or shared memory transport
+is often required — confirm by measuring on the target hardware.
 
 ### Tail latency (p99/p999)
 
-**Tail latency matters more than mean.** For safety-critical control loops, a 1ms average with occasional 50ms spikes is worse than a 5ms average with 7ms p99.9. Always measure and report p99.9 latency:
-
-```bash
-# cyclictest with histogram output for tail latency analysis
-sudo cyclictest -l 100000 -m -S -p 90 -i 1000 -h 400 -q > histogram.txt
-# Analyze: sort histogram, find the latency at 99.9th percentile
-```
+**Tail latency matters more than mean.** For safety-critical control loops, a 1ms average with occasional 50ms spikes is worse than a 5ms average with 7ms p99.9. Always measure and report p99.9 using the 10-minute histogram procedure in
+[Benchmark reference numbers](#benchmark-reference-numbers) above (20 ms
+histogram, cumulative-count p99.9 readout, larger `-h` on overflow). Compare
+the p99.9 figure — not the average — against the control-loop budget.
 
 ## 10. Hardware-level RT pitfalls
 

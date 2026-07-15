@@ -1510,3 +1510,52 @@ class TestMainDirectInvocation:
             eval_runner_main()
         assert exc.value.code == 2
         assert 'min-pass-rate' in capsys.readouterr().err
+
+
+class TestEvalRunnerWithoutPyYaml:
+    """eval_runner must not require PyYAML at import time: the module is
+    imported by this test suite and `--help` should work on a bare
+    environment. Only actually running evals needs the dependency, and
+    that path fails with a friendly message and exit 2."""
+
+    def _run_with_blocked_yaml(self, tmp_path, *args):
+        # A stub package that raises on import simulates the missing
+        # dependency without touching the real environment.
+        (tmp_path / 'yaml').mkdir()
+        (tmp_path / 'yaml' / '__init__.py').write_text(
+            "raise ImportError('PyYAML blocked for this test')\n",
+            encoding='utf-8')
+        env = os.environ.copy()
+        env['PYTHONPATH'] = str(tmp_path)
+        return subprocess.run(
+            [sys.executable, EVAL_RUNNER, *args],
+            capture_output=True, text=True, env=env, timeout=10)
+
+    def test_no_top_level_yaml_import(self):
+        import ast
+        with open(EVAL_RUNNER, 'r', encoding='utf-8') as fh:
+            tree = ast.parse(fh.read())
+        top_level_imports = {
+            alias.name
+            for node in tree.body
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module
+            for node in tree.body
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert 'yaml' not in top_level_imports, (
+            'eval_runner.py must import PyYAML lazily, not at module level')
+
+    def test_help_works_without_pyyaml(self, tmp_path):
+        result = self._run_with_blocked_yaml(tmp_path, '--help')
+        assert result.returncode == 0, result.stderr
+        assert '--eval-dir' in result.stdout
+
+    def test_run_without_pyyaml_fails_helpfully(self, tmp_path):
+        result = self._run_with_blocked_yaml(
+            tmp_path, '--eval-dir', EVALS_DIR)
+        assert result.returncode == 2
+        assert 'PyYAML is required' in result.stderr
+        assert 'requirements-dev.txt' in result.stderr
