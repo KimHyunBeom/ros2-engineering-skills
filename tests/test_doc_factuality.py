@@ -201,3 +201,63 @@ class TestUseSimTimeExamples:
                     f'testing.md:{idx + 1} sets use_sim_time without a '
                     f'/clock source nearby'
                 )
+
+
+HARDWARE_MD = os.path.join(ROOT, 'references', 'hardware-interface.md')
+
+
+class TestDistroMatrix:
+    """Row-scoped checks on the SKILL.md distro table.
+
+    Deliberately anchored to specific table cells (not global string
+    absence) so that changelog prose mentioning an old value never trips
+    the check. Pinned errors: Kilted EOL was recorded as Nov 2025 (official
+    EOL is Dec 2026), Kilted ros2_control was 4.x while
+    hardware-interface.md said 5.x, and the pre-Lyrical EventsExecutor was
+    labeled stable although it ships in rclcpp::experimental.
+    """
+
+    def _distro_table(self):
+        lines = _lines(SKILL_MD)
+        header_idx = next(
+            i for i, line in enumerate(lines)
+            if line.startswith('| Feature') and 'Humble' in line)
+        headers = [c.strip() for c in
+                   lines[header_idx].strip().strip('|').split('|')]
+        rows = {}
+        for line in lines[header_idx + 2:]:
+            if not line.startswith('|'):
+                break
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            rows[cells[0]] = dict(zip(headers[1:], cells[1:]))
+        return rows
+
+    def test_table_has_lyrical_column(self):
+        rows = self._distro_table()
+        assert 'Lyrical (LTS)' in rows['EOL'], (
+            'SKILL.md distro table must carry a Lyrical (LTS) column')
+
+    def test_kilted_eol_cell_is_dec_2026(self):
+        assert self._distro_table()['EOL']['Kilted (non-LTS)'] == 'Dec 2026'
+
+    def test_lyrical_eol_cell_is_may_2031(self):
+        assert self._distro_table()['EOL']['Lyrical (LTS)'] == 'May 2031'
+
+    def test_lyrical_ubuntu_cell_is_26_04(self):
+        assert self._distro_table()['Ubuntu']['Lyrical (LTS)'] == '26.04'
+
+    def test_ros2_control_versions_per_distro(self):
+        row = self._distro_table()['ros2_control interface']
+        assert row['Kilted (non-LTS)'] == '5.x'
+        assert '6.x' in row['Lyrical (LTS)']
+
+    def test_events_executor_cells(self):
+        row = self._distro_table()['EventsExecutor']
+        assert 'Experimental' in row['Kilted (non-LTS)']
+        assert 'EventsCBGExecutor' in row['Lyrical (LTS)']
+
+    def test_hardware_interface_agrees_on_kilted_5x(self):
+        content = _read(HARDWARE_MD)
+        assert re.search(r'Kilted \(5\.x\)', content), (
+            'hardware-interface.md distro comparison must keep Kilted at '
+            '5.x, matching the SKILL.md table')

@@ -120,9 +120,9 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 
 ### 1. Distro awareness
 
-<!-- LAST_UPDATED: 2026-03-30 — Review this table every 6 months or when a new distro is released. -->
-<!-- NEXT_REVIEW: 2026-09-30 -->
-> **Staleness warning:** The table below was last verified on **2026-03-30**.
+<!-- LAST_UPDATED: 2026-07-15 — Review this table every 6 months or when a new distro is released. -->
+<!-- NEXT_REVIEW: 2027-01-15 -->
+> **Staleness warning:** The table below was last verified on **2026-07-15**.
 > If the current date is more than 6 months past that, re-verify EOL dates and
 > feature support against https://docs.ros.org/en/rolling/Releases.html before
 > relying on this table. When you update it, change both `LAST_UPDATED` and
@@ -130,20 +130,27 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 
 Always ask which ROS 2 distribution the user targets. Key differences:
 
-| Feature                   | Foxy (**EOL**)       | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Rolling            |
-|---------------------------|----------------------|--------------------|--------------------|--------------------|--------------------|
-| EOL                       | Jun 2023 (**ended**) | May 2027           | May 2029           | Nov 2025           | Rolling            |
-| Ubuntu                    | 20.04               | 22.04              | 24.04              | 24.04              | Latest             |
-| Default DDS               | Fast DDS             | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           |
-| Zenoh support             | —                    | —                  | —                  | Tier 1             | Tier 1             |
-| Type description support  | No                   | No                 | Yes                | Yes                | Yes                |
-| Service introspection     | No                   | No                 | Yes                | Yes                | Yes                |
-| EventsExecutor            | No                   | No                 | Experimental       | Stable (+ rclpy)   | Stable (+ rclpy)   |
-| Default bag format        | sqlite3              | sqlite3            | MCAP               | MCAP               | MCAP               |
-| ros2_control interface    | N/A (separate)       | 2.x                | 4.x                | 4.x                | Latest             |
-| CMake recommendation      | ament_target_deps    | ament_target_deps  | either             | target_link_libs   | target_link_libs   |
+| Feature                   | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Lyrical (LTS)      | Rolling            |
+|---------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
+| EOL                       | May 2027           | May 2029           | Dec 2026           | May 2031           | Rolling            |
+| Ubuntu                    | 22.04              | 24.04              | 24.04              | 26.04              | Latest             |
+| Default DDS               | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           | Fast DDS           |
+| Zenoh support             | —                  | —                  | Tier 1             | Tier 1             | Tier 1             |
+| Type description support  | No                 | Yes                | Yes                | Yes                | Yes                |
+| Service introspection     | No                 | Yes                | Yes                | Yes                | Yes                |
+| EventsExecutor            | No                 | Experimental       | Experimental (+ rclpy port) | EventsCBGExecutor (non-experimental, rclcpp) | Verify installed rclcpp |
+| Default bag format        | sqlite3            | MCAP               | MCAP               | MCAP               | MCAP               |
+| ros2_control interface    | 2.x                | 4.x                | 5.x                | 6.x (verify installed) | Latest         |
+| CMake recommendation      | ament_target_deps  | either             | target_link_libs   | target_link_libs   | target_link_libs   |
 
-When the user does not specify, default to the latest LTS (Jazzy).
+Foxy (EOL June 2023, Ubuntu 20.04, ros2_control not bundled) is a migration
+reference only — see the migration notes below. The pre-Lyrical
+`EventsExecutor` lives in the `rclcpp::experimental` namespace on every
+release that ships it; Lyrical adds the separate, non-experimental
+`rclcpp::executors::EventsCBGExecutor`.
+
+When the user does not specify, default to the latest LTS — **Lyrical Luth**
+(Ubuntu 26.04); use **Jazzy** when the target platform is Ubuntu 24.04.
 Pin the exact distro in Dockerfile, CI, and documentation so builds are reproducible.
 
 ### 2. C++ vs Python decision
@@ -350,9 +357,14 @@ When upgrading between distributions, check these breaking changes first:
   replaces `ROS_LOCALHOST_ONLY`; `launch_ros` parameter handling changed — retest
   launch files.
 - **Jazzy → Kilted (non-LTS):** Zenoh Tier 1 (`RMW_IMPLEMENTATION=rmw_zenoh_cpp`);
-  EventsExecutor stable in rclcpp and rclpy; `ament_target_dependencies()` deprecated —
-  use `target_link_libraries()` with modern CMake targets; Gazebo pairing is **Ionic**
-  (Harmonic was Jazzy); multi-bag replay in `ros2 bag play`.
+  experimental EventsExecutor gains an rclpy port (still `rclcpp::experimental`);
+  `ament_target_dependencies()` deprecated — use `target_link_libraries()` with modern
+  CMake targets; Gazebo pairing is **Ionic** (Harmonic was Jazzy); multi-bag replay in
+  `ros2 bag play`.
+- **Kilted → Lyrical (LTS):** primary platform moves to Ubuntu 26.04; default RMW
+  stays `rmw_fastrtps_cpp`; new non-experimental `rclcpp::executors::EventsCBGExecutor`
+  (distinct from the experimental EventsExecutor); ros2_control moves to the 6.x
+  series — verify per-package changes against the installed versions (Principle 11).
 - **ROS 1 → ROS 2:** see `references/migration-ros1.md` for a step-by-step strategy.
 
 ## Quick reference — ros2 CLI
