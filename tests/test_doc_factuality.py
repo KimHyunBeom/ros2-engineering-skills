@@ -293,3 +293,39 @@ class TestCallbackGroupRule:
         assert 'returns without waiting' in block
         assert 'add_done_callback' in block
         assert 'must** be in a separate' not in block
+
+
+COMMUNICATION_MD = os.path.join(ROOT, 'references', 'communication.md')
+
+
+class TestDefaultRmwVendor:
+    """Fast DDS (rmw_fastrtps_cpp) is the default RMW on every current
+    release; only Galactic defaulted to CycloneDDS. Pinned errors: a
+    section heading called CycloneDDS the 'default vendor' and the vendor
+    table credited CycloneDDS as default for Humble+."""
+
+    def test_cyclonedds_heading_not_called_default(self):
+        for lineno, line in enumerate(_lines(COMMUNICATION_MD), start=1):
+            if line.startswith('#') and 'CycloneDDS tuning' in line:
+                assert 'default vendor' not in line, (
+                    f'communication.md:{lineno} still titles CycloneDDS as '
+                    f'the default vendor'
+                )
+                return
+        raise AssertionError('CycloneDDS tuning section heading not found')
+
+    def test_vendor_table_default_row(self):
+        row = next((line for line in _lines(COMMUNICATION_MD)
+                    if line.startswith('|') and 'ROS 2 default' in line),
+                   None)
+        assert row is not None, 'vendor table must keep a ROS 2 default row'
+        cells = [c.strip() for c in row.strip().strip('|').split('|')]
+        # Column order: Aspect | CycloneDDS | FastDDS | Connext | Zenoh
+        assert 'Galactic' in cells[1], (
+            f'CycloneDDS default cell must say Galactic only: {cells[1]!r}')
+        assert 'Default' in cells[2], (
+            f'FastDDS cell must carry the Default marker: {cells[2]!r}')
+
+    def test_default_rmw_stated_in_dds_section(self):
+        content = _read(COMMUNICATION_MD)
+        assert 'rmw_fastrtps_cpp' in content

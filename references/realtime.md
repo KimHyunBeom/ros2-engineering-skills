@@ -567,8 +567,9 @@ DDS transport latency (loopback, **1 KB message** — small messages only):
 | Zenoh | ~20-40 us | ~60-120 us |
 | Intra-process (zero-copy) | ~1-5 us | ~5-10 us |
 
-**Large message scaling:** For `PointCloud2` (~1.5 MB) or `Image` (~900 KB), multiply
-the above numbers by 50–100x due to serialization, fragmentation, and reassembly.
+**Large message scaling:** small-message numbers do not transfer to
+`PointCloud2` (~1.5 MB) or `Image` (~900 KB) — serialization, fragmentation,
+and reassembly dominate at those sizes. Measure with your actual payloads.
 For large messages on the RT path, intra-process or shared memory transport is
 effectively mandatory.
 

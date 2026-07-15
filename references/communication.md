@@ -648,7 +648,12 @@ ros2 topic echo /rosout --qos-reliability reliable --field msg | grep -i "incomp
 
 ## 10. DDS configuration
 
-### CycloneDDS tuning (default vendor)
+**Default RMW:** every current release — Humble, Jazzy, Kilted, Lyrical, and
+Rolling — defaults to `rmw_fastrtps_cpp` (Fast DDS). Galactic was the only
+distro that defaulted to CycloneDDS. Select a different vendor with
+`RMW_IMPLEMENTATION=<rmw_pkg>` on **every** node in the graph.
+
+### CycloneDDS tuning
 
 ```xml
 <!-- cyclonedds.xml -->
@@ -708,7 +713,7 @@ performance in challenging network conditions compared to DDS.
 # Install (available as binary in Jazzy+)
 sudo apt install ros-jazzy-rmw-zenoh-cpp
 
-# Use Zenoh instead of CycloneDDS
+# Use Zenoh instead of a DDS-based RMW
 export RMW_IMPLEMENTATION=rmw_zenoh_cpp
 ```
 
@@ -737,17 +742,24 @@ enabling zero-copy communication for nodes on the same host without iceoryx.
 | Aspect | CycloneDDS | FastDDS | Connext DDS | Zenoh |
 |---|---|---|---|---|
 | License | Eclipse Public 2.0 | Apache 2.0 | Commercial | Eclipse Public 2.0 |
-| ROS 2 default | Humble+ | Foxy (was default) | Tier 2 | Tier 1 (Kilted+) |
-| Shared memory | iceoryx plugin (Jazzy+) | Built-in DataSharing | Built-in | SHM plugin |
-| Latency (loopback, 1KB) | ~30-60 us | ~40-80 us | ~20-40 us | ~20-40 us |
+| ROS 2 default | Galactic only | **Default** (Foxy, Humble, and every release since) | Tier 2 | Tier 1 (Kilted+) |
+| Shared memory | iceoryx/PSMX (version-specific, see below) | Built-in DataSharing | Built-in | SHM plugin |
+| Latency | No universal ranking — measure (see below) | — | — | — |
 | Discovery | SPDP/SEDP (multicast) | SPDP/SEDP (multicast) | SPDP/SEDP + Discovery Server | Zenoh router/scouting |
 | Configuration | XML file | XML profile | XML + QoS file | JSON5 config |
-| Best for | General purpose, most tested | Large data + SHM | Safety-critical, certified | Constrained networks, WiFi, WAN |
+| Best for | General purpose, widely tested | Large data + SHM | Safety-critical, certified | Constrained networks, WiFi, WAN |
 
-**Large message warning:** The latency numbers above are for small (~1 KB) messages.
-For `PointCloud2` (~1.5 MB) or `Image` (~900 KB), expect **50–100x worse latency**
-due to serialization, UDP fragmentation, and reassembly. For high-bandwidth data on
-latency-sensitive paths, use intra-process zero-copy or shared memory transport.
+**Latency:** no universal vendor ranking can be asserted — results depend on
+RMW version, QoS, transport, payload size, topology, and the host
+environment. Fix all of those variables and measure with `performance_test`
+or `ros2_performance` on your target hardware before choosing a vendor for a
+latency-sensitive path.
+
+**Large message warning:** small-message results do not transfer to large
+messages: for `PointCloud2` (~1.5 MB) or `Image` (~900 KB), serialization,
+UDP fragmentation, and reassembly dominate. Measure with your actual
+payloads; for high-bandwidth data on latency-sensitive paths, prefer
+intra-process communication or shared memory transport.
 
 ### Linux kernel tuning for DDS
 
@@ -781,12 +793,17 @@ net.ipv4.ipfrag_high_thresh=134217728
 
 ### Shared memory transport (CycloneDDS + iceoryx)
 
-For nodes on the same host, shared memory transport eliminates serialization and
-network stack overhead entirely. CycloneDDS supports iceoryx as a shared memory
-backend starting in Jazzy.
+For nodes on the same host, shared memory transport avoids the network stack.
+The integration is **vendor- and version-specific**: older CycloneDDS
+releases wire in iceoryx directly, while newer releases expose shared memory
+through the PSMX (pluggable shared memory exchange) interface with different
+configuration and limitations. Verify the mechanism and config schema against
+the documentation of the CycloneDDS version actually installed before relying
+on the example below.
 
 ```xml
-<!-- cyclonedds_shm.xml — Jazzy+ with iceoryx plugin -->
+<!-- cyclonedds_shm.xml — example for the iceoryx-plugin generation;
+     PSMX-based releases configure this differently -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain>
     <SharedMemory>
