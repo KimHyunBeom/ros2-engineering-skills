@@ -316,15 +316,22 @@ class TestDefaultRmwVendor:
 
     def test_vendor_table_default_row(self):
         row = next((line for line in _lines(COMMUNICATION_MD)
-                    if line.startswith('|') and 'ROS 2 default' in line),
+                    if line.startswith('|') and 'Default RMW' in line),
                    None)
-        assert row is not None, 'vendor table must keep a ROS 2 default row'
+        assert row is not None, 'vendor table must keep a Default RMW row'
         cells = [c.strip() for c in row.strip().strip('|').split('|')]
         # Column order: Aspect | CycloneDDS | FastDDS | Connext | Zenoh
         assert 'Galactic' in cells[1], (
             f'CycloneDDS default cell must say Galactic only: {cells[1]!r}')
         assert 'Default' in cells[2], (
             f'FastDDS cell must carry the Default marker: {cells[2]!r}')
+
+    def test_vendor_table_separates_support_tier(self):
+        """Default-RMW status and ROS support tier are different facts and
+        must live in separate rows (the old combined row put Connext's
+        Tier 2 in the default column)."""
+        assert any(line.startswith('|') and 'ROS support tier' in line
+                   for line in _lines(COMMUNICATION_MD))
 
     def test_default_rmw_stated_in_dds_section(self):
         content = _read(COMMUNICATION_MD)
@@ -360,8 +367,18 @@ class TestZeroCopyClaims:
         content = _read(os.path.join(ROOT, 'references',
                                      'nodes-executors.md'))
         assert 'Loaned messages' in content
-        assert 'never zero-overhead' in content
+        assert 'standard DDS transport' in content
         assert 'subscriber count' in content.lower()
+
+    def test_interprocess_copy_avoidance_not_absolutized(self):
+        """Vendor SHM/PSMX and loaned messages CAN avoid copies across
+        processes when their preconditions hold — the docs must not claim
+        inter-process is 'never' zero-copy (pinned overcorrection)."""
+        for path in (SKILL_MD,
+                     os.path.join(ROOT, 'references', 'nodes-executors.md')):
+            content = _read(path)
+            assert 'never zero-overhead' not in content, path
+            assert 'never zero-copy' not in content, path
 
 
 class TestCrashSafetyFraming:
@@ -396,3 +413,43 @@ class TestCrashSafetyFraming:
         assert 'destructor does not run' in content
         assert 'not guaranteed' in content
         assert 'safety-estop' in content
+
+
+class TestBlockingWaitSemantics:
+    """Blocking-wait examples must be split by client library. Pinned
+    error: rclpy's Future.result() was listed as a synchronous wait — it
+    does not block; it immediately returns whatever result is stored."""
+
+    def _callback_bullet(self):
+        lines = _lines(SKILL_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if 'Calling a service from a callback' in line)
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith('- ') or not lines[i].strip()),
+                   len(lines))
+        return '\n'.join(lines[start:end])
+
+    def test_rclpy_future_result_not_listed_as_blocking(self):
+        block = self._callback_bullet()
+        assert 'does not block' in block, (
+            'the bullet must state that rclpy future.result() does not '
+            'block')
+        assert 'future.done()' in block
+        assert 'future.get()' in block  # the rclcpp blocking call
+
+
+class TestKillTestSafetyConditions:
+    """The kill -9 failsafe verification moves a real robot if the
+    failsafe is broken; the instruction must carry its safety
+    preconditions inline, not in another file."""
+
+    def test_kill_test_paragraph_carries_safety_conditions(self):
+        lines = _lines(HARDWARE_MD)
+        idx = next(i for i, line in enumerate(lines) if 'kill -9' in line)
+        window = '\n'.join(lines[max(0, idx - 3):idx + 10])
+        for needle in ('never an automated', 'simulation', 'e-stop',
+                       'torque limits'):
+            assert needle in window, (
+                f'kill-test instructions missing inline safety condition: '
+                f'{needle!r}'
+            )

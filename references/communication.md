@@ -745,7 +745,8 @@ enabling zero-copy communication for nodes on the same host without iceoryx.
 | Aspect | CycloneDDS | FastDDS | Connext DDS | Zenoh |
 |---|---|---|---|---|
 | License | Eclipse Public 2.0 | Apache 2.0 | Commercial | Eclipse Public 2.0 |
-| ROS 2 default | Galactic only | **Default** (Foxy, Humble, and every release since) | Tier 2 | Tier 1 (Kilted+) |
+| Default RMW | Galactic only | **Default** (Foxy, Humble, and every release since) | Never default | Never default |
+| ROS support tier | Tier 1 | Tier 1 | Tier 2 | Tier 1 (Kilted+) |
 | Shared memory | iceoryx/PSMX (version-specific, see below) | Built-in DataSharing | Built-in | SHM plugin |
 | Latency | No universal ranking — measure (see below) | — | — | — |
 | Discovery | SPDP/SEDP (multicast) | SPDP/SEDP (multicast) | SPDP/SEDP + Discovery Server | Zenoh router/scouting |
@@ -797,16 +798,18 @@ net.ipv4.ipfrag_high_thresh=134217728
 ### Shared memory transport (CycloneDDS + iceoryx)
 
 For nodes on the same host, shared memory transport avoids the network stack.
-The integration is **vendor- and version-specific**: older CycloneDDS
-releases wire in iceoryx directly, while newer releases expose shared memory
-through the PSMX (pluggable shared memory exchange) interface with different
-configuration and limitations. Verify the mechanism and config schema against
-the documentation of the CycloneDDS version actually installed before relying
-on the example below.
+The integration is **vendor- and version-specific**: the older CycloneDDS
+generation (0.10.x era) wires in iceoryx directly via `<SharedMemory>`,
+while current releases expose shared memory through the PSMX (pluggable
+shared memory exchange) interface with a different config schema and
+limitations. No PSMX example is embedded here because its schema varies
+across releases — copy the example for your **installed** CycloneDDS
+version from its own documentation (source-first), and treat the block
+below as legacy-generation only.
 
 ```xml
-<!-- cyclonedds_shm.xml — example for the iceoryx-plugin generation;
-     PSMX-based releases configure this differently -->
+<!-- cyclonedds_shm.xml — legacy iceoryx-plugin generation (CycloneDDS
+     0.10.x era) ONLY; PSMX-based releases configure this differently -->
 <CycloneDDS xmlns="https://cdds.io/config">
   <Domain>
     <SharedMemory>

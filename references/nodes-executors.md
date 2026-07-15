@@ -715,11 +715,14 @@ Copy avoidance has three distinct mechanisms — don't conflate them:
    `use_intra_process_comms(true)`. Whether delivery is actually copy-free
    depends on publish ownership (`unique_ptr`), callback signature,
    **subscriber count** (extra subscribers can force copies), and QoS.
-2. **Loaned messages / inter-process shared memory**: RMW- and
-   vendor-dependent (see `references/communication.md` §10).
-3. **Separate processes over DDS**: never zero-overhead — serialization,
-   copies, and transport bandwidth remain, and moving work to another
-   process does not remove encoding costs.
+2. **Loaned messages / vendor shared memory (SHM/PSMX)**: RMW- and
+   vendor-dependent; can avoid some or all copies across processes when
+   their preconditions hold — same host, compatible QoS, and typically
+   fixed-size message types (see `references/communication.md` §10).
+3. **Separate processes over the standard DDS transport**: serialization,
+   copies, and transport bandwidth apply, and moving work to another
+   process does not by itself remove encoding costs. Copy avoidance across
+   processes requires the vendor mechanisms in (2).
 
 ```cpp
 rclcpp::NodeOptions options;

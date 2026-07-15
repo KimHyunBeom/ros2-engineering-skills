@@ -165,15 +165,18 @@ the latency-critical path.
 **Mixed stacks are normal.** A typical robot has C++ drivers/controllers and Python
 orchestration/monitoring. Note: `component_container` (composition) only loads
 C++ components via pluginlib. Python nodes run as separate processes and
-communicate over intra-host DDS — **not zero-overhead**: separate processes
-always pay serialization, copies, and transport bandwidth, and splitting work
-into another process does not remove encoding costs. Copy avoidance has three
-distinct mechanisms with different preconditions: (1) the rclcpp
-**intra-process** path (`use_intra_process_comms(true)`, same process) avoids
-copies only depending on publish ownership (`unique_ptr`), callback type,
-subscriber count, and QoS; (2) **loaned messages / inter-process shared
-memory** are RMW- and vendor-dependent; (3) separate-process DDS is never
-zero-copy. Details: `references/nodes-executors.md`.
+communicate over intra-host DDS — **not zero-overhead by default**: the
+standard inter-process transport pays serialization, copies, and transport
+bandwidth, and splitting work into another process does not by itself remove
+encoding costs. Copy avoidance has three distinct mechanisms with different
+preconditions: (1) the rclcpp **intra-process** path
+(`use_intra_process_comms(true)`, same process) avoids copies only depending
+on publish ownership (`unique_ptr`), callback type, subscriber count, and
+QoS; (2) **loaned messages / vendor shared memory (SHM/PSMX)** are RMW- and
+vendor-dependent and can avoid some or all copies when their preconditions
+hold; (3) separate processes on the standard DDS transport get no copy
+avoidance — crossing processes without copies requires the vendor
+mechanisms in (2). Details: `references/nodes-executors.md`.
 
 ### 3. Package structure conventions
 
@@ -252,11 +255,14 @@ stale data). See `references/communication.md` section 9 for full API and exampl
   rclpy: `future = client.call_async(request)` then
   `future.add_done_callback(...)` — and **returns without waiting for the
   result**, the same `MutuallyExclusiveCallbackGroup` does not deadlock.
-  Deadlock comes from **waiting synchronously inside the callback**
-  (`spin_until_future_complete`, `future.result()`, or any blocking wait):
-  that pattern needs the client in a different callback group or a
-  `ReentrantCallbackGroup`, plus a matching executor configuration
-  (e.g. `MultiThreadedExecutor`). Do not assume plain-executor
+  Deadlock comes from **waiting synchronously inside the callback** —
+  rclcpp: `future.get()`, `wait()`/`wait_for()`, `spin_until_future_complete`;
+  rclpy: synchronous `Client.call()`, `spin_until_future_complete`, or a
+  loop that blocks until `future.done()`. (rclpy's `future.result()` by
+  itself does not block — it immediately returns whatever result is
+  currently stored, which may be unset.) A synchronous wait needs the
+  client in a different callback group or a `ReentrantCallbackGroup`, plus
+  a matching executor configuration (e.g. `MultiThreadedExecutor`). Do not assume plain-executor
   `async def` callback patterns are safe until tested with your executor;
   Lyrical's `rclpy.experimental.AsyncNode` is a separate execution model
   that officially supports `await client.call(...)` inside callbacks.

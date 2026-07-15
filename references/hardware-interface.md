@@ -919,8 +919,13 @@ timeout in the motor controller or vendor firmware (no fresh command → stop),
 a heartbeat/watchdog that gates motion (see `references/safety-estop.md` —
 no heartbeat, no motion), a hardware failsafe/STO input, and a hardware
 e-stop chain. Treat the process-side cleanup as hygiene, and verify the
-downstream failsafe by killing the process (`kill -9`) during bench testing
-and observing that the actuators stop.
+downstream failsafe with a deliberate kill test: `kill -9` the control
+process and confirm the actuators stop. **This test moves a real robot if
+the failsafe is broken** — it is a commissioning test performed by an
+operator, never an automated step for CI or an AI agent to run on hardware.
+Validate the behavior in simulation/HIL first; on the real robot, put the
+platform on a stand or in a cage (wheels/legs off the ground), apply speed
+and torque limits, and keep the physical e-stop in hand.
 
 ## 11. Common failures and fixes
 

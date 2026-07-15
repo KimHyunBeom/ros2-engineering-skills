@@ -558,20 +558,20 @@ platform — never assume these numbers transfer directly.
 | cyclictest avg latency | 2-5 us | 1-3 us |
 | Worst-case jitter (p99.9) | 200-2000 us | 10-20 us |
 
-DDS transport latency (loopback, **1 KB message** — small messages only):
-
-| Middleware | Avg latency | p99 latency |
-|---|---|---|
-| CycloneDDS | ~30-60 us | ~100-200 us |
-| FastDDS | ~40-80 us | ~150-300 us |
-| Zenoh | ~20-40 us | ~60-120 us |
-| Intra-process (zero-copy) | ~1-5 us | ~5-10 us |
+**DDS transport latency:** no per-vendor figures are given here — a
+universal vendor ranking cannot be asserted, and any number depends on the
+RMW version, QoS, transport, payload size, topology, and host. What holds
+generally: intra-process delivery is orders of magnitude cheaper than any
+inter-process transport, and inter-process latency rises steeply with
+payload size. Measure on the target platform with `performance_test` or
+`ros2_performance`, with those variables fixed and reported alongside the
+numbers (see `references/communication.md` §10).
 
 **Large message scaling:** small-message numbers do not transfer to
 `PointCloud2` (~1.5 MB) or `Image` (~900 KB) — serialization, fragmentation,
 and reassembly dominate at those sizes. Measure with your actual payloads.
-For large messages on the RT path, intra-process or shared memory transport is
-effectively mandatory.
+For large messages on the RT path, intra-process or shared memory transport
+is often required — confirm by measuring on the target hardware.
 
 ### Tail latency (p99/p999)
 
