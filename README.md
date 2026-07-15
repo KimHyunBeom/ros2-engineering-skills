@@ -260,10 +260,10 @@ Ubuntu 24.04 deployments. **Humble** remains supported for Ubuntu 22.04.
 
 | Distro | Status | CI verification | Notes |
 |---|---|---|---|
-| **Lyrical Luth** (LTS, May 2026) | Recommended for Ubuntu 26.04 | Included in matrix — CI verification pending | EventsCBGExecutor, ros2_control 6.x — references document the deltas |
+| **Lyrical Luth** (LTS, May 2026) | Recommended for Ubuntu 26.04 | Full pipeline (lint → unit → docker build → colcon test → smoke) | EventsCBGExecutor, ros2_control 6.x — references document the deltas |
 | **Jazzy Jalisco** (LTS) | Recommended for Ubuntu 24.04 | Full pipeline (lint → unit → docker build → colcon test → smoke) | Scripts and scaffolds are CI-verified against Jazzy idioms |
 | **Humble Hawksbill** (LTS) | Fully supported (Ubuntu 22.04) | Full pipeline | Distro-aware code paths handle 22.04 / older rosidl / pre-`HardwareComponentInterfaceParams` API |
-| **Kilted Kaiju** (non-LTS, May 2025, EOL Dec 2026) | Reference-supported | Included in matrix — CI verification pending | Zenoh Tier 1, experimental EventsExecutor rclpy port — references document the deltas |
+| **Kilted Kaiju** (non-LTS, May 2025, EOL Dec 2026) | Reference-supported | Full pipeline | Zenoh Tier 1, experimental EventsExecutor rclpy port — references document the deltas |
 | **Rolling Ridley** | CI-verified via source overlay of broken upstream packages | Full pipeline (rolling-only stage in Dockerfile) | See **Rolling caveat** below |
 | **Foxy Fitzroy** (LTS, EOL June 2023) | Migration reference only | Not built | Documented for upgrade paths only |
 
