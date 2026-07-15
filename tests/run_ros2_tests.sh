@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Supported distros (matching osrf/ros:<distro>-desktop images)
-ALL_DISTROS=(humble jazzy rolling)
+ALL_DISTROS=(humble jazzy kilted lyrical rolling)
 
 if [[ $# -gt 0 ]]; then
     DISTROS=("$@")

@@ -1,7 +1,7 @@
 # Dockerfile for testing ROS 2 code examples across distros.
 #
 # Build args:
-#   ROS_DISTRO  — humble | jazzy | rolling (default: jazzy)
+#   ROS_DISTRO  — humble | jazzy | kilted | lyrical | rolling (default: jazzy)
 #
 # Usage:
 #   docker build -f tests/Dockerfile.ros2-test --build-arg ROS_DISTRO=humble -t ros2-test:humble .
@@ -80,8 +80,8 @@ RUN apt-get update \
 # fast at this layer with the actionable error rather than later in the
 # user-package build.
 #
-# Humble/Jazzy are no-ops here because their LTS apt repos are
-# internally consistent.
+# Humble/Jazzy/Kilted/Lyrical are no-ops here because their released
+# apt repos are internally consistent.
 RUN if [ "${ROS_DISTRO}" = "rolling" ]; then \
       set -e; \
       { source /opt/ros/${ROS_DISTRO}/setup.bash; } > /dev/null 2>&1; \

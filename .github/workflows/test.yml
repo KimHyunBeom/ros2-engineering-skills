@@ -2,7 +2,7 @@ name: Test
 
 on:
   push:
-    branches: [main, master, 'claude/**']
+    branches: [main, master, 'claude/**', 'docs/**']
   pull_request:
     branches: [main, master]
 
@@ -72,7 +72,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ros_distro: [humble, jazzy, rolling]
+        ros_distro: [humble, jazzy, kilted, lyrical, rolling]
     steps:
       - uses: actions/checkout@v6
 
