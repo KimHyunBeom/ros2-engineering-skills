@@ -366,9 +366,12 @@ private:
 ```
 
 **Performance note:** When combined with intra-process communication
-(`rclcpp::NodeOptions().use_intra_process_comms(true)`), type adapters enable true
-zero-copy `cv::Mat` transfer between nodes in the same process, completely bypassing
-serialization and `cv_bridge` overhead.
+(`rclcpp::NodeOptions().use_intra_process_comms(true)`), type adapters can
+eliminate serialization and `cv_bridge` conversion for nodes in the same
+process. Whether the underlying `cv::Mat` buffer is actually shared rather
+than copied follows the intra-process rules: publish as `unique_ptr`, and
+copies may still occur depending on callback type, subscriber count, and QoS
+(see `references/nodes-executors.md`).
 
 **Industry reference:** NVIDIA NITROS (used in Isaac ROS) builds on type adapters to
 negotiate GPU tensor <-> ROS message conversion, keeping data on the GPU between

@@ -164,10 +164,16 @@ the latency-critical path.
 
 **Mixed stacks are normal.** A typical robot has C++ drivers/controllers and Python
 orchestration/monitoring. Note: `component_container` (composition) only loads
-C++ components via pluginlib. Python nodes run as separate processes, but can
-share a launch file and communicate via zero-overhead intra-host DDS.
-Intra-process zero-copy works for any nodes sharing a process with
-`use_intra_process_comms(true)` — not only composable components.
+C++ components via pluginlib. Python nodes run as separate processes and
+communicate over intra-host DDS — **not zero-overhead**: separate processes
+always pay serialization, copies, and transport bandwidth, and splitting work
+into another process does not remove encoding costs. Copy avoidance has three
+distinct mechanisms with different preconditions: (1) the rclcpp
+**intra-process** path (`use_intra_process_comms(true)`, same process) avoids
+copies only depending on publish ownership (`unique_ptr`), callback type,
+subscriber count, and QoS; (2) **loaned messages / inter-process shared
+memory** are RMW- and vendor-dependent; (3) separate-process DDS is never
+zero-copy. Details: `references/nodes-executors.md`.
 
 ### 3. Package structure conventions
 
@@ -258,7 +264,9 @@ stale data). See `references/communication.md` section 9 for full API and exampl
   timer or subscription callback on the default executor. Offload to a
   dedicated thread or use a `MultiThreadedExecutor` with a reentrant group.
 - In rclcpp, prefer `std::shared_ptr<const MessageT>` in subscription
-  callbacks to avoid unnecessary copies and enable zero-copy intra-process.
+  callbacks to avoid unnecessary copies; whether intra-process delivery is
+  actually copy-free additionally depends on publish ownership, subscriber
+  count, and QoS (Principle 2).
 
 ### 9. Lifecycle-first design
 

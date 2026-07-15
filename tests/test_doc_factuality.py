@@ -329,3 +329,36 @@ class TestDefaultRmwVendor:
     def test_default_rmw_stated_in_dds_section(self):
         content = _read(COMMUNICATION_MD)
         assert 'rmw_fastrtps_cpp' in content
+
+
+class TestZeroCopyClaims:
+    """Copy avoidance is conditional, split across three mechanisms
+    (rclcpp intra-process, loaned messages/SHM, separate-process DDS).
+    Pinned error: SKILL.md called separate-process intra-host DDS
+    'zero-overhead' and presented intra-process transfer as unconditionally
+    zero-copy."""
+
+    def test_skill_md_only_negates_zero_overhead(self):
+        """'zero-overhead' may appear only in its negation."""
+        for lineno, line in enumerate(_lines(SKILL_MD), start=1):
+            plain = line.replace('**', '')
+            idx = 0
+            while True:
+                idx = plain.find('zero-overhead', idx)
+                if idx == -1:
+                    break
+                assert plain[max(0, idx - 4):idx] == 'not ', (
+                    f'SKILL.md:{lineno} asserts zero-overhead positively: '
+                    f'{line.strip()!r}'
+                )
+                idx += 1
+
+    def test_skill_md_states_dds_is_not_zero_overhead(self):
+        assert 'not zero-overhead' in _read(SKILL_MD).replace('**', '')
+
+    def test_nodes_executors_lists_three_mechanisms(self):
+        content = _read(os.path.join(ROOT, 'references',
+                                     'nodes-executors.md'))
+        assert 'Loaned messages' in content
+        assert 'never zero-overhead' in content
+        assert 'subscriber count' in content.lower()

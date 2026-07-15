@@ -702,12 +702,24 @@ class AsyncServiceCallerNode(Node):
 
 ## 4. Intra-process communication
 
-When multiple nodes run in the same process, you can eliminate serialization
-overhead entirely. This works for **any** nodes sharing a process — whether
-loaded as composable components, manually instantiated in the same `main()`,
-or even publishers and subscribers within the same node. Composition via
+When multiple nodes run in the same process, serialization can be avoided.
+This works for **any** nodes sharing a process — whether loaded as composable
+components, manually instantiated in the same `main()`, or even publishers
+and subscribers within the same node. Composition via
 `ComposableNodeContainer` is the most common way to colocate nodes, but it
 is not the only way.
+
+Copy avoidance has three distinct mechanisms — don't conflate them:
+
+1. **rclcpp intra-process path** (this section): same process +
+   `use_intra_process_comms(true)`. Whether delivery is actually copy-free
+   depends on publish ownership (`unique_ptr`), callback signature,
+   **subscriber count** (extra subscribers can force copies), and QoS.
+2. **Loaned messages / inter-process shared memory**: RMW- and
+   vendor-dependent (see `references/communication.md` §10).
+3. **Separate processes over DDS**: never zero-overhead — serialization,
+   copies, and transport bandwidth remain, and moving work to another
+   process does not remove encoding costs.
 
 ```cpp
 rclcpp::NodeOptions options;
@@ -723,14 +735,16 @@ auto node = std::make_shared<MyNode>(options);
 - Both must use compatible QoS (typically `KEEP_LAST`, depth 1)
 
 ```cpp
-// Publisher side — must publish unique_ptr for zero-copy
+// Publisher side — must publish unique_ptr for the copy-free path
 auto msg = std::make_unique<sensor_msgs::msg::Image>();
 // ... fill msg ...
 pub_->publish(std::move(msg));
 
-// Subscriber side — receives shared_ptr, zero copy from same process
+// Subscriber side — with a single subscriber and the conditions above met,
+// msg points to the published buffer; additional subscribers or ownership
+// mismatches can still force per-subscriber copies
 void callback(const sensor_msgs::msg::Image::ConstSharedPtr msg) {
-  // msg points to the same memory — no copy occurred
+  // likely the same memory — verify, don't assume, when it matters
 }
 ```
 
