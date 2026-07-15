@@ -63,7 +63,7 @@ _DISTRO_ORDER = {
 # when absent the lint is skipped and main() reports that in checks_skipped
 # so "checks passed" and "checks never ran" are distinguishable.
 try:
-    import yaml as _yaml  # noqa: F401
+    import yaml as _yaml  # type: ignore[import-untyped]  # noqa: F401
     _HAVE_YAML = True
 except ImportError:
     _HAVE_YAML = False
@@ -253,7 +253,7 @@ def validate_nav2_yaml(filepath):
     issues = []
     if not _HAVE_YAML:
         return issues
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     try:
         with open(filepath, 'r', encoding='utf-8') as fh:
