@@ -547,12 +547,22 @@ ros2 trace stop my_trace
 
 ### Benchmark reference numbers
 
-These are **order-of-magnitude reference ranges** consistent with community
-PREEMPT_RT benchmarking (e.g. the OSADL QA farm's continuously published
-cyclictest data) on desktop-class x86 hardware. Your numbers **will differ**
-based on CPU, kernel version, BIOS settings, and workload. Reproduce on your
-target platform with `cyclictest -m -Sp90 -i1000 -d0` under representative
-load — never assume these ranges transfer directly.
+These are **illustrative order-of-magnitude ranges** for desktop-class x86
+hardware — not sourced measurements. For continuously published, per-system
+cyclictest data (with the exact command and measurement duration per plot),
+see the [OSADL QA Farm](https://www.osadl.org/Continuous-latency-monitoring.qa-farm-monitoring.0.html);
+for histogram interpretation, the
+[Linux Foundation cyclictest guide](https://wiki.linuxfoundation.org/realtime/documentation/howto/tools/cyclictest/start).
+Your numbers **will differ** based on CPU, kernel version, BIOS settings, and
+workload. Measure on your target platform under representative load:
+
+```bash
+sudo cyclictest -m -S -p 90 -i 1000 -h 20000 -D 10m -q > histogram.txt
+```
+
+The p99.9 is the histogram bin where the cumulative sample count reaches
+99.9% of the total. If cyclictest reports samples above the 20 ms histogram
+ceiling (overflows), rerun with a larger `-h`.
 
 | Metric | Without PREEMPT_RT | With PREEMPT_RT |
 |---|---|---|

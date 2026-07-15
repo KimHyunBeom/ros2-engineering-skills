@@ -333,8 +333,12 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist '{}'
 # and `ros2 topic info -v` on the robot shows no new publisher appeared.
 ```
 
-Test this as part of CI-on-robot: a bringup check that *tries* to spoof the permit and
-fails is the only proof the policy is actually enforced.
+Automate this check only in simulation/HIL. On physical hardware, run it as an
+operator-approved test on a restrained platform (same rules as the stop-path
+checklist below); never as unattended CI or by an AI agent — if enforcement is
+broken, the spoofed permit or `/cmd_vel` goes through. A bringup check that
+*tries* to spoof the permit and fails provides direct runtime evidence that
+the policy is enforced.
 
 ## 5. Recovery and reset semantics
 

@@ -469,14 +469,49 @@ SAFETY_ESTOP_MD = os.path.join(ROOT, 'references', 'safety-estop.md')
 
 
 class TestFaultInjectionSafetyConsistency:
-    """The stop-path fault-injection checklist and the hardware-interface
-    kill test must agree: fault injection on a real robot is an
-    operator-approved test on a physically restrained platform, never an
-    unattended CI step. Pinned error: the checklist said to automate items
-    1-6 'in CI-on-robot', contradicting hardware-interface.md."""
+    """Fault injection and spoof tests on a real robot are operator-approved
+    tests on a physically restrained platform, never unattended CI or an
+    agent action. Pinned errors: the stop-path checklist said to automate
+    items 1-6 'in CI-on-robot', and the SROS2 isolation check said 'Test
+    this as part of CI-on-robot' — both contradicting hardware-interface.md.
 
-    def test_checklist_forbids_unattended_automation(self):
-        content = _read(SAFETY_ESTOP_MD)
-        assert 'Automate 1–6 in CI-on-robot' not in content
-        assert 'never run as an unattended CI step' in content
-        assert 'physically restrained' in content
+    Scoped to the two sections that instruct hardware tests (heading to
+    next heading), not a global string ban: conditional mentions of
+    CI-on-robot elsewhere (e.g. 'do NOT run this in CI-on-robot') must stay
+    legal."""
+
+    def _section(self, heading):
+        """Extract heading-to-next-heading, ignoring '#' lines inside
+        fenced code blocks (bash comments are not markdown headings)."""
+        lines = _lines(SAFETY_ESTOP_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if re.match(r'#{1,6} ', line) and heading in line)
+        in_fence = False
+        end = len(lines)
+        for i in range(start + 1, len(lines)):
+            if lines[i].startswith('```'):
+                in_fence = not in_fence
+            elif not in_fence and re.match(r'#{1,6} ', lines[i]):
+                end = i
+                break
+        return '\n'.join(lines[start:end])
+
+    def test_isolation_check_requires_safety_conditions(self):
+        section = self._section('Verify the isolation')
+        assert 'Test this as part of CI-on-robot' not in section
+        for needle in ('simulation/HIL', 'operator-approved', 'restrained',
+                       'unattended CI', 'AI agent'):
+            assert needle in section, (
+                f'isolation-check section missing safety condition: '
+                f'{needle!r}'
+            )
+
+    def test_stop_path_checklist_requires_safety_conditions(self):
+        section = self._section('Stop-path checklist')
+        assert 'Test this as part of CI-on-robot' not in section
+        for needle in ('operator approval', 'physically restrained',
+                       'unattended CI', 'AI agent'):
+            assert needle in section, (
+                f'stop-path checklist section missing safety condition: '
+                f'{needle!r}'
+            )
