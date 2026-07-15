@@ -589,13 +589,10 @@ is often required — confirm by measuring on the target hardware.
 
 ### Tail latency (p99/p999)
 
-**Tail latency matters more than mean.** For safety-critical control loops, a 1ms average with occasional 50ms spikes is worse than a 5ms average with 7ms p99.9. Always measure and report p99.9 latency:
-
-```bash
-# cyclictest with histogram output for tail latency analysis
-sudo cyclictest -l 100000 -m -S -p 90 -i 1000 -h 400 -q > histogram.txt
-# Analyze: sort histogram, find the latency at 99.9th percentile
-```
+**Tail latency matters more than mean.** For safety-critical control loops, a 1ms average with occasional 50ms spikes is worse than a 5ms average with 7ms p99.9. Always measure and report p99.9 using the 10-minute histogram procedure in
+[Benchmark reference numbers](#benchmark-reference-numbers) above (20 ms
+histogram, cumulative-count p99.9 readout, larger `-h` on overflow). Compare
+the p99.9 figure — not the average — against the control-loop budget.
 
 ## 10. Hardware-level RT pitfalls
 

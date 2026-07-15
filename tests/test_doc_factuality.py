@@ -42,6 +42,23 @@ def _lines(path):
     return _read(path).splitlines()
 
 
+def _md_section(path, heading):
+    """Extract heading-to-next-heading from a markdown file, ignoring '#'
+    lines inside fenced code blocks (bash comments are not headings)."""
+    lines = _lines(path)
+    start = next(i for i, line in enumerate(lines)
+                 if re.match(r'#{1,6} ', line) and heading in line)
+    in_fence = False
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if lines[i].startswith('```'):
+            in_fence = not in_fence
+        elif not in_fence and re.match(r'#{1,6} ', lines[i]):
+            end = i
+            break
+    return '\n'.join(lines[start:end])
+
+
 class TestNav2RecoveryNaming:
     """recoveries_server / nav2_recoveries must never be presented as
     current naming — only inside migration/legacy context."""
@@ -481,20 +498,7 @@ class TestFaultInjectionSafetyConsistency:
     legal."""
 
     def _section(self, heading):
-        """Extract heading-to-next-heading, ignoring '#' lines inside
-        fenced code blocks (bash comments are not markdown headings)."""
-        lines = _lines(SAFETY_ESTOP_MD)
-        start = next(i for i, line in enumerate(lines)
-                     if re.match(r'#{1,6} ', line) and heading in line)
-        in_fence = False
-        end = len(lines)
-        for i in range(start + 1, len(lines)):
-            if lines[i].startswith('```'):
-                in_fence = not in_fence
-            elif not in_fence and re.match(r'#{1,6} ', lines[i]):
-                end = i
-                break
-        return '\n'.join(lines[start:end])
+        return _md_section(SAFETY_ESTOP_MD, heading)
 
     def test_isolation_check_requires_safety_conditions(self):
         section = self._section('Verify the isolation')
@@ -515,3 +519,35 @@ class TestFaultInjectionSafetyConsistency:
                 f'stop-path checklist section missing safety condition: '
                 f'{needle!r}'
             )
+
+
+REALTIME_MD = os.path.join(ROOT, 'references', 'realtime.md')
+
+
+class TestCyclictestProcedureSingleSource:
+    """realtime.md defines ONE cyclictest measurement procedure (in the
+    Benchmark reference numbers section); the tail-latency section
+    references it instead of carrying a second recipe. Pinned error: the
+    tail-latency section kept an older command (-l 100000, -h 400 — a
+    histogram ceiling that overflows non-RT spikes) and a 'sort histogram'
+    analysis that conflicted with the cumulative-count readout."""
+
+    def test_tail_latency_section_references_the_procedure(self):
+        section = _md_section(REALTIME_MD, 'Tail latency')
+        assert '(#benchmark-reference-numbers)' in section, (
+            'tail-latency section must link to the single measurement '
+            'procedure')
+        for stale in ('sort histogram', '-h 400', '-l 100000',
+                      'sudo cyclictest'):
+            assert stale not in section, (
+                f'tail-latency section must not carry its own recipe: '
+                f'{stale!r}'
+            )
+
+    def test_benchmark_section_keeps_the_procedure(self):
+        section = _md_section(REALTIME_MD, 'Benchmark reference numbers')
+        for needle in ('-D 10m', '-h 20000', 'cumulative'):
+            assert needle in section, (
+                f'benchmark procedure missing element: {needle!r}')
+        assert re.search(r'overflows?', section), (
+            'benchmark procedure must keep the overflow rerun note')
