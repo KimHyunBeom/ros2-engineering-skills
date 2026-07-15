@@ -326,7 +326,7 @@ Details: `references/navigation.md` sections 7 and 10.
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
 | Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
 | Waiting on a service future inside a callback | Synchronous waiting deadlocks a `MutuallyExclusiveCallbackGroup`; registering a response callback and returning is safe even in the same group | Return without waiting; if a synchronous wait is unavoidable, put the client in a different group (or reentrant) with a `MultiThreadedExecutor` |
-| No safe command on shutdown | Motors hold last velocity after node exits | Send zero-velocity in `on_deactivate` AND destructor (see `references/hardware-interface.md`) |
+| No safe command on shutdown | Motors hold last velocity after node exits | Send zero-velocity in `on_deactivate` and the destructor as best-effort hygiene; crash safety needs a downstream command timeout/watchdog (`references/safety-estop.md`) |
 | Dynamic subscriptions with `StaticSingleThreadedExecutor` | New subs are never picked up after `spin()` | Use `SingleThreadedExecutor` or `MultiThreadedExecutor` for dynamic entities |
 | CPU frequency governor left on `powersave`/`ondemand` | 10-100 ms latency spikes in RT path | Set `performance` governor, disable turbo boost (see `references/realtime.md`) |
 
@@ -344,7 +344,7 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 | 5 | Hardcoding `/opt/ros/humble/` paths in launch files | Breaks on any other distro or install prefix | Use `FindPackageShare`, `PathJoinSubstitution`, or environment substitutions |
 | 6 | Forgetting `<depend>` tags in `package.xml` | `colcon build` works in overlay but `rosdep install` and Docker builds fail | Declare every `find_package()` / `import` as `<depend>` in package.xml |
 | 7 | Using `time.sleep()` for rate control in rclpy | Blocks the executor thread; timers and subscriptions stop firing | Use `create_timer()` or `Rate` with a `MultiThreadedExecutor` |
-| 8 | Not sending zero-velocity on deactivate/shutdown | Robot holds last commanded velocity when the node crashes | Send zero-command in both `on_deactivate` and the destructor |
+| 8 | Treating process-side cleanup as crash safety | Destructors never run on SIGKILL/power loss and are not guaranteed on segfaults — the robot keeps its last command | Zero-command in `on_deactivate` + destructor is best-effort hygiene only; require a downstream command timeout, heartbeat/watchdog, and hardware e-stop (`references/safety-estop.md`) |
 | 9 | Mixing `ament_target_dependencies()` and `target_link_libraries()` | Kilted deprecated `ament_target_dependencies` — mixing causes link errors | Use `target_link_libraries()` with modern CMake targets for Kilted+; `ament_target_dependencies()` for Humble/Jazzy |
 | 10 | Generating `rospy` / `roscpp` code instead of `rclpy` / `rclcpp` | ROS 1 patterns in a ROS 2 context — nothing compiles | This skill is ROS 2 only — always use `rclpy`/`rclcpp` APIs |
 | 11 | Ignoring `use_sim_time` parameter in simulation | Real clock diverges from Gazebo clock — tf lookups fail, controllers drift | Set `use_sim_time:=true` in launch and pass `--clock` to `ros2 bag play` |

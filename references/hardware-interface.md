@@ -892,7 +892,8 @@ hardware_interface::CallbackReturn on_deactivate(
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
-// Destructor as safety net — on_deactivate may not be called on crash
+// Destructor: best-effort cleanup for normal teardown and SOME abnormal
+// unwind paths. It is NOT a crash safety net — see below.
 ~MyRobotHardware() override
 {
   if (serial_.is_open()) {
@@ -902,9 +903,24 @@ hardware_interface::CallbackReturn on_deactivate(
 }
 ```
 
-**Anti-pattern:** Relying solely on `on_deactivate` for cleanup. If the controller
-manager crashes or `SIGKILL` is sent, `on_deactivate` is never called. The destructor
-should be a safety net that also attempts to safe the hardware.
+**What the destructor does and does not cover.** Sending a safe command in
+both `on_deactivate` and the destructor is good shutdown hygiene — it covers
+normal teardown and some exceptional unwind paths. It is **not** a crash
+safety net:
+
+- **SIGKILL and power loss:** the destructor does not run.
+- **Segmentation faults and other abnormal terminations:** destructor
+  execution is not guaranteed.
+- Communication loss between the process and the hardware makes any
+  process-side command moot.
+
+Actual crash safety must live **downstream of the process**: a command
+timeout in the motor controller or vendor firmware (no fresh command → stop),
+a heartbeat/watchdog that gates motion (see `references/safety-estop.md` —
+no heartbeat, no motion), a hardware failsafe/STO input, and a hardware
+e-stop chain. Treat the process-side cleanup as hygiene, and verify the
+downstream failsafe by killing the process (`kill -9`) during bench testing
+and observing that the actuators stop.
 
 ## 11. Common failures and fixes
 
@@ -915,7 +931,7 @@ should be a safety net that also attempts to safe the hardware.
 | Controller reports "hardware not activated" | Lifecycle not transitioned | Use `ros2 control set_controller_state` or spawner |
 | Jitter in control loop | `read()` or `write()` takes too long | Profile with `ros2 control list_hardware_interfaces`, offload I/O to thread |
 | Robot jumps on activation | Initial command is 0.0, not current position | In `on_activate`, sync commands to state: `set_command(name, get_state(name))` (Jazzy) or `hw_commands_[i] = hw_positions_[i]` (Humble) |
-| Emergency stop doesn't work | `write()` still sends last command | Check for `is_active()` in write, send zero-velocity on deactivate |
+| Emergency stop doesn't work | `write()` still sends last command | Check for `is_active()` in write, send zero-velocity on deactivate; the stop path itself must be a downstream watchdog/hardware chain, not node code (`references/safety-estop.md`) |
 | Permission denied on serial port | User not in dialout group | `sudo usermod -aG dialout $USER`, re-login |
 | Controller chain activation fails | Downstream controller not activated before upstream | Activate in dependency order: hardware -> downstream controller -> upstream controller |
 | EtherCAT slave not reaching OP state | Incorrect PDO mapping or timing violation | Check ESI file, verify PDO sizes match slave documentation, ensure RT kernel |

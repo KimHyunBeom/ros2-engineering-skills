@@ -362,3 +362,37 @@ class TestZeroCopyClaims:
         assert 'Loaned messages' in content
         assert 'never zero-overhead' in content
         assert 'subscriber count' in content.lower()
+
+
+class TestCrashSafetyFraming:
+    """Destructors are best-effort cleanup, not crash safety: they never
+    run on SIGKILL/power loss and are not guaranteed on segfaults. Crash
+    safety lives downstream (command timeout, heartbeat/watchdog, hardware
+    e-stop). Pinned error: pitfall 8 and the shutdown anti-pattern row
+    presented on_deactivate + destructor as the fix for crashes, and
+    hardware-interface.md called the destructor a crash safety net."""
+
+    def _skill_row(self, needle):
+        for line in _lines(SKILL_MD):
+            if line.startswith('|') and needle in line:
+                return line
+        raise AssertionError(f'no SKILL.md table row containing {needle!r}')
+
+    def test_pitfall_8_requires_downstream_failsafes(self):
+        row = self._skill_row('Treating process-side cleanup')
+        assert 'best-effort' in row
+        assert re.search(r'watchdog|timeout', row)
+        assert 'when the node crashes | Send zero-command' not in row
+
+    def test_shutdown_antipattern_row_points_downstream(self):
+        row = self._skill_row('No safe command on shutdown')
+        assert 'best-effort' in row
+        assert re.search(r'watchdog|timeout', row)
+        assert 'safety-estop' in row
+
+    def test_hardware_interface_destructor_not_a_safety_net(self):
+        content = _read(HARDWARE_MD)
+        assert 'NOT a crash safety net' in content
+        assert 'destructor does not run' in content
+        assert 'not guaranteed' in content
+        assert 'safety-estop' in content
