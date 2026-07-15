@@ -256,11 +256,14 @@ stale data). See `references/communication.md` section 9 for full API and exampl
   `future.add_done_callback(...)` — and **returns without waiting for the
   result**, the same `MutuallyExclusiveCallbackGroup` does not deadlock.
   Deadlock comes from **waiting synchronously inside the callback** —
-  rclcpp: `future.get()`, `wait()`/`wait_for()`, `spin_until_future_complete`;
-  rclpy: synchronous `Client.call()`, `spin_until_future_complete`, or a
-  loop that blocks until `future.done()`. (rclpy's `future.result()` by
-  itself does not block — it immediately returns whatever result is
-  currently stored, which may be unset.) A synchronous wait needs the
+  rclcpp: calling `get()`/`wait()`/`wait_for()` on a **not-yet-complete**
+  future from the initiating callback, or `spin_until_future_complete`
+  (inside the response callback the future is already complete, so `get()`
+  there is safe — the examples use exactly that); rclpy: synchronous
+  `Client.call()`, `spin_until_future_complete`, or a loop that blocks
+  until `future.done()`. (rclpy's `future.result()` by itself does not
+  block — it immediately returns whatever result is currently stored,
+  which may be unset.) A synchronous wait needs the
   client in a different callback group or a `ReentrantCallbackGroup`, plus
   a matching executor configuration (e.g. `MultiThreadedExecutor`). Do not assume plain-executor
   `async def` callback patterns are safe until tested with your executor;

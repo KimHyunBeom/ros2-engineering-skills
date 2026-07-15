@@ -470,8 +470,15 @@ Run these on the real robot (wheels off the ground / in a cage) before every rel
 | 6 | Reset after a genuine clear | Robot stays stationary until a *fresh* command arrives |
 | 7 | Press the hardware e-stop with the software stack frozen | Motors de-energize via STO — proves the layers are independent |
 
-Automate 1–6 in CI-on-robot (see `references/system-bringup.md` §5 for the oneshot
-check pattern); item 7 is a manual commissioning test.
+Items 1–6 inject real faults into a machine that moves if a layer is broken.
+Run them only with operator approval on a physically restrained platform — a
+dedicated HIL/test rig, or the robot on a stand or in a cage with speed and
+torque limits and the physical e-stop in hand (same rules as the failsafe
+kill test in `references/hardware-interface.md`). They can be scripted for
+repeatability on that restrained rig (see `references/system-bringup.md` §5
+for the oneshot check pattern), but must never run as an unattended CI step
+or be executed by an AI agent on hardware. Item 7 is always a manual
+commissioning test.
 
 ## 7. Common failures and fixes
 

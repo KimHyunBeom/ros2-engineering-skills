@@ -427,7 +427,9 @@ class TestBlockingWaitSemantics:
         end = next((i for i in range(start + 1, len(lines))
                     if lines[i].startswith('- ') or not lines[i].strip()),
                    len(lines))
-        return '\n'.join(lines[start:end])
+        # Normalize hard-wrapped prose so phrase assertions are not broken
+        # by line-wrap positions.
+        return ' '.join('\n'.join(lines[start:end]).split())
 
     def test_rclpy_future_result_not_listed_as_blocking(self):
         block = self._callback_bullet()
@@ -435,7 +437,15 @@ class TestBlockingWaitSemantics:
             'the bullet must state that rclpy future.result() does not '
             'block')
         assert 'future.done()' in block
-        assert 'future.get()' in block  # the rclcpp blocking call
+
+    def test_rclcpp_get_qualified_to_incomplete_futures(self):
+        """future.get() is only a deadlock when called on a not-yet-complete
+        future from the initiating callback; inside the response callback
+        the future is complete and get() is safe (the examples use it)."""
+        block = self._callback_bullet()
+        assert 'not-yet-complete' in block
+        assert '`get()`' in block
+        assert 'response callback' in block
 
 
 class TestKillTestSafetyConditions:
@@ -453,3 +463,20 @@ class TestKillTestSafetyConditions:
                 f'kill-test instructions missing inline safety condition: '
                 f'{needle!r}'
             )
+
+
+SAFETY_ESTOP_MD = os.path.join(ROOT, 'references', 'safety-estop.md')
+
+
+class TestFaultInjectionSafetyConsistency:
+    """The stop-path fault-injection checklist and the hardware-interface
+    kill test must agree: fault injection on a real robot is an
+    operator-approved test on a physically restrained platform, never an
+    unattended CI step. Pinned error: the checklist said to automate items
+    1-6 'in CI-on-robot', contradicting hardware-interface.md."""
+
+    def test_checklist_forbids_unattended_automation(self):
+        content = _read(SAFETY_ESTOP_MD)
+        assert 'Automate 1–6 in CI-on-robot' not in content
+        assert 'never run as an unattended CI step' in content
+        assert 'physically restrained' in content

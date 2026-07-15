@@ -547,10 +547,12 @@ ros2 trace stop my_trace
 
 ### Benchmark reference numbers
 
-These are **order-of-magnitude reference numbers** from published benchmarks on
-specific hardware (Intel i7-12700, Ubuntu 24.04). Your numbers **will differ** based
-on CPU, kernel version, BIOS settings, and workload. Always benchmark on your target
-platform — never assume these numbers transfer directly.
+These are **order-of-magnitude reference ranges** consistent with community
+PREEMPT_RT benchmarking (e.g. the OSADL QA farm's continuously published
+cyclictest data) on desktop-class x86 hardware. Your numbers **will differ**
+based on CPU, kernel version, BIOS settings, and workload. Reproduce on your
+target platform with `cyclictest -m -Sp90 -i1000 -d0` under representative
+load — never assume these ranges transfer directly.
 
 | Metric | Without PREEMPT_RT | With PREEMPT_RT |
 |---|---|---|
@@ -561,11 +563,13 @@ platform — never assume these numbers transfer directly.
 **DDS transport latency:** no per-vendor figures are given here — a
 universal vendor ranking cannot be asserted, and any number depends on the
 RMW version, QoS, transport, payload size, topology, and host. What holds
-generally: intra-process delivery is orders of magnitude cheaper than any
-inter-process transport, and inter-process latency rises steeply with
-payload size. Measure on the target platform with `performance_test` or
-`ros2_performance`, with those variables fixed and reported alongside the
-numbers (see `references/communication.md` §10).
+generally: intra-process delivery is usually far cheaper than
+serialization-based inter-process transports, and inter-process latency
+rises steeply with payload size; vendor shared-memory/loaned-message paths
+sit in between and need their own measurement. Measure on the target
+platform with `performance_test` or `ros2_performance`, with those
+variables fixed and reported alongside the numbers
+(see `references/communication.md` §10).
 
 **Large message scaling:** small-message numbers do not transfer to
 `PointCloud2` (~1.5 MB) or `Image` (~900 KB) — serialization, fragmentation,
