@@ -261,3 +261,35 @@ class TestDistroMatrix:
         assert re.search(r'Kilted \(5\.x\)', content), (
             'hardware-interface.md distro comparison must keep Kilted at '
             '5.x, matching the SKILL.md table')
+
+
+class TestCallbackGroupRule:
+    """Service-from-callback semantics: synchronous waiting deadlocks a
+    MutuallyExclusiveCallbackGroup; registering a response callback and
+    returning is safe even in the same group. Pinned error: an anti-pattern
+    row claimed the pattern 'Deadlocks even with async', prescribing group
+    surgery where none was needed."""
+
+    def _skill_table_row(self, needle):
+        for line in _lines(SKILL_MD):
+            if line.startswith('|') and needle in line:
+                return line
+        raise AssertionError(
+            f'no SKILL.md table row containing {needle!r}')
+
+    def test_service_future_row_states_async_is_safe(self):
+        row = self._skill_table_row('service future')
+        assert 'safe even in the same group' in row
+        assert 'Deadlocks even with async' not in row
+
+    def test_principle_bullet_distinguishes_sync_wait(self):
+        lines = _lines(SKILL_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if 'Calling a service from a callback' in line)
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith('- ') or not lines[i].strip()),
+                   len(lines))
+        block = '\n'.join(lines[start:end])
+        assert 'returns without waiting' in block
+        assert 'add_done_callback' in block
+        assert 'must** be in a separate' not in block

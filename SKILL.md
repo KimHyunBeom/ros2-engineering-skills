@@ -241,11 +241,19 @@ stale data). See `references/communication.md` section 9 for full API and exampl
   shared state without locks, but limits throughput.
 - A `ReentrantCallbackGroup` allows parallel execution — you must protect
   shared state with `std::mutex` (C++) or `threading.Lock` (Python).
-- **Calling a service from a callback:** The service client **must** be in a
-  separate `MutuallyExclusiveCallbackGroup` from the calling callback. Otherwise
-  the executor deadlocks — the callback waits for the response while the executor
-  cannot deliver it. Always use `async_send_request` with a response callback;
-  never use `spin_until_future_complete` inside an executor callback.
+- **Calling a service from a callback:** If the callback registers the
+  request asynchronously — rclcpp: `async_send_request(request, response_callback)`;
+  rclpy: `future = client.call_async(request)` then
+  `future.add_done_callback(...)` — and **returns without waiting for the
+  result**, the same `MutuallyExclusiveCallbackGroup` does not deadlock.
+  Deadlock comes from **waiting synchronously inside the callback**
+  (`spin_until_future_complete`, `future.result()`, or any blocking wait):
+  that pattern needs the client in a different callback group or a
+  `ReentrantCallbackGroup`, plus a matching executor configuration
+  (e.g. `MultiThreadedExecutor`). Do not assume plain-executor
+  `async def` callback patterns are safe until tested with your executor;
+  Lyrical's `rclpy.experimental.AsyncNode` is a separate execution model
+  that officially supports `await client.call(...)` inside callbacks.
 - Never do blocking work (file I/O, long computation, `sleep`) inside a
   timer or subscription callback on the default executor. Offload to a
   dedicated thread or use a `MultiThreadedExecutor` with a reentrant group.
@@ -309,7 +317,7 @@ Details: `references/navigation.md` sections 7 and 10.
 | Ignoring QoS compatibility | Silent communication failure | Match publisher/subscriber QoS or check with `ros2 topic info -v` |
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
 | Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
-| Service client in same callback group as caller | Deadlocks even with async in `MultiThreadedExecutor` | Put service client in a separate `MutuallyExclusiveCallbackGroup` |
+| Waiting on a service future inside a callback | Synchronous waiting deadlocks a `MutuallyExclusiveCallbackGroup`; registering a response callback and returning is safe even in the same group | Return without waiting; if a synchronous wait is unavoidable, put the client in a different group (or reentrant) with a `MultiThreadedExecutor` |
 | No safe command on shutdown | Motors hold last velocity after node exits | Send zero-velocity in `on_deactivate` AND destructor (see `references/hardware-interface.md`) |
 | Dynamic subscriptions with `StaticSingleThreadedExecutor` | New subs are never picked up after `spin()` | Use `SingleThreadedExecutor` or `MultiThreadedExecutor` for dynamic entities |
 | CPU frequency governor left on `powersave`/`ondemand` | 10-100 ms latency spikes in RT path | Set `performance` governor, disable turbo boost (see `references/realtime.md`) |
@@ -321,7 +329,7 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 
 | # | Pitfall | What goes wrong | Correct approach |
 |---|---------|----------------|-----------------|
-| 1 | Using `spin_until_future_complete` inside a callback | Deadlocks the executor — the callback blocks waiting for a response that can never be delivered | Use `async_send_request` with a response callback; put the service client in a separate `MutuallyExclusiveCallbackGroup` |
+| 1 | Using `spin_until_future_complete` inside a callback | Deadlocks the executor — the callback blocks waiting for a response that can never be delivered | Register a response callback and return without waiting; a separate callback group (or reentrant + `MultiThreadedExecutor`) is needed only when a synchronous wait is unavoidable |
 | 2 | Generating Foxy-era API for Jazzy/Kilted | `node_executable` is deprecated, `export_state_interfaces()` signature changed in ros2_control 4.x | Always check the distro feature matrix above before generating code |
 | 3 | Omitting QoS in publisher/subscriber creation | Defaults silently mismatch — publisher sends but subscriber receives nothing | Always specify QoS explicitly; use the QoS defaults table in Principle 6 |
 | 4 | Creating a `msg/` directory inside a non-interfaces package | Builds locally but fails in CI — interface packages need `rosidl_generate_interfaces` | Put messages in a dedicated `*_interfaces` package |

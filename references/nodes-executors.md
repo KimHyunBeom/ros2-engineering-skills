@@ -469,10 +469,13 @@ private:
 
 ### Critical pattern: calling a service from a callback
 
-If you call a service from within a subscription or timer callback, the service
-client **must** be on a different callback group than the caller. Otherwise the
-executor deadlocks — the callback is waiting for the service response, but the
-executor cannot process the response because the callback group is occupied.
+Deadlock comes from **waiting synchronously** for the response inside the
+callback: the waiting callback occupies its `MutuallyExclusiveCallbackGroup`,
+and the executor cannot deliver the response into that occupied group.
+Registering the request asynchronously with a response callback and
+**returning without waiting** does not deadlock — even when the client and
+the caller share the same group, the response callback runs after the
+calling callback returns.
 
 ```cpp
 // WRONG — deadlocks in ANY of these conditions:
@@ -494,7 +497,9 @@ public:
     // Timer in default group
     timer_ = create_wall_timer(1s, std::bind(&MyNode::timer_callback, this));
 
-    // Service client in a SEPARATE callback group
+    // Client in a separate callback group: required only if some code path
+    // still waits synchronously on this client; harmless belt-and-braces
+    // otherwise (the async pattern below is safe even in the same group).
     client_group_ = create_callback_group(
       rclcpp::CallbackGroupType::MutuallyExclusive);
     client_ = create_client<MySrv>("my_service",
@@ -518,10 +523,17 @@ private:
 };
 ```
 
-**Rule:** When using `MultiThreadedExecutor`, always put service clients in a
-separate `MutuallyExclusiveCallbackGroup` from the callbacks that invoke them.
-With `SingleThreadedExecutor`, never use `spin_until_future_complete` inside a
-callback — always use the async callback pattern shown above.
+**Rule:** Never wait synchronously on a service future inside a callback.
+Register a response callback — rclcpp: `async_send_request(request, callback)`;
+rclpy: `future = client.call_async(request)` then
+`future.add_done_callback(...)` — and return; that is safe even when client
+and caller share a `MutuallyExclusiveCallbackGroup`. If a synchronous wait is
+truly unavoidable, the client must live in a different callback group (or a
+`ReentrantCallbackGroup`) **and** the executor must be multi-threaded. Do not
+assume plain-executor `async def` callback patterns are safe until tested with
+your executor configuration; Lyrical's `rclpy.experimental.AsyncNode` is a
+separate execution model that officially supports `await client.call(...)`
+inside callbacks.
 
 ### The default group trap
 
@@ -539,7 +551,8 @@ auto sensor_group = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 // Group 2: state machine callbacks (mutually exclusive — shared state)
 auto state_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
-// Group 3: service clients (separate from callers to avoid deadlock)
+// Group 3: service clients (needed only for synchronous waits — async
+// response callbacks are safe even in the caller's group)
 auto client_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
 // Assign explicitly
@@ -586,7 +599,8 @@ class MultiGroupNode(Node):
         # Group 2: state callbacks (mutually exclusive — shared state)
         self.state_group = MutuallyExclusiveCallbackGroup()
 
-        # Group 3: service clients (separate group to avoid deadlock)
+        # Group 3: service clients (needed only for synchronous waits —
+        # call_async + add_done_callback is safe even in the caller's group)
         self.client_group = MutuallyExclusiveCallbackGroup()
 
         # Subscriptions assigned to groups
@@ -1186,7 +1200,7 @@ class ImageProcessor : public rclcpp::Node
 | Callbacks run serially despite MultiThreadedExecutor | All in default MutuallyExclusive group | Assign Reentrant callback group explicitly |
 | Timer drifts under load | Wall timer + heavy callbacks | Use a dedicated callback group or reduce callback work |
 | Intra-process not working | Missing `use_intra_process_comms(true)` or nodes not in same process | Enable in NodeOptions for all participating nodes; ensure they run in the same process (composition, same main(), etc.) |
-| Service call deadlocks executor | Service client in same callback group as caller | Put service client in a separate MutuallyExclusiveCallbackGroup; use async_send_request with callback |
+| Service call deadlocks executor | Synchronous wait on the future inside the callback | Register a response callback (`async_send_request(request, cb)` / `call_async` + `add_done_callback`) and return; move the client to a separate group only for unavoidable synchronous waits |
 
 ---
 
