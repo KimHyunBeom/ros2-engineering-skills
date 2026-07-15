@@ -303,7 +303,8 @@ Contributions welcome. Please:
 2. Include working code examples, not pseudocode
 3. Document anti-patterns alongside correct patterns
 4. Note which ROS 2 distros your change applies to
-5. Run `flake8 scripts/ tests/` and `mypy scripts/` before submitting
+5. Install the dev dependencies (`pip install -r requirements-dev.txt`),
+   then run `flake8 scripts/ tests/` and `mypy scripts/` before submitting
 6. Ensure `pytest tests/ --cov=scripts --cov-fail-under=90` passes
 7. Test with at least one agent (Claude Code, Codex, etc.)
 

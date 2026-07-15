@@ -20,14 +20,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - name: Install linters
-        run: pip install flake8 mypy pip-audit
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
       - name: flake8
         run: flake8 scripts/ tests/
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
-      - name: Install runtime deps for audit
-        run: pip install pyyaml hypothesis pytest pytest-cov
       - name: pip-audit (current environment)
         # Best-effort dependency vulnerability scan over the installed env.
         # Non-blocking: advisories are surfaced for awareness, not enforcement.
@@ -47,8 +45,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: pip install pytest pytest-cov hypothesis pyyaml
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
       - name: Run tests with coverage
         run: |
           python -m pytest tests/ -v --tb=short \
@@ -132,8 +130,8 @@ jobs:
           python scripts/create_package.py test_py --type python --dest /tmp/test_pkgs
           python scripts/launch_validator.py /tmp/test_pkgs/
 
-      - name: Install eval_runner dependencies
-        run: pip install pyyaml
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
 
       - name: Run eval_runner structural smoke check (fails if any eval criterion drifts)
         # This is the CI gate for evals/expected fixtures vs eval.yaml
