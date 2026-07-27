@@ -48,21 +48,14 @@ production fleet deployment. Detailed patterns and code templates live in
 
 ## How to use this skill
 
-**Progressive disclosure — do NOT read everything at once.** This always-loaded
-file carries routing, core principles, pitfalls, and anti-patterns; that is
-enough for quick questions and architectural decisions. `references/*.md` load
-on demand — use the Decision Router to pick the 1–2 files matching the task,
-never all of them. `scripts/` are tools to run (scaffolding, QoS checking,
-launch validation), not reading material.
-
-**Steps:**
-
-1. Identify what the user is building (see Decision Router below).
-2. Read **only** the matching `references/*.md` file(s) for detailed guidance.
-3. Check the **AI pitfalls** table before generating any code.
-4. Apply the Core Engineering Principles in every artifact you produce.
-5. When multiple domains intersect (e.g. Nav2 + ros2_control), read both files
-   but favor safety > determinism > simplicity when recommendations conflict.
+This always-loaded file carries routing, core principles, pitfalls, and
+anti-patterns — enough for quick questions and architectural decisions.
+For implementation work, use the Decision Router below to load the
+reference file(s) matching the task; the AI pitfalls table lists mistakes
+worth re-checking before generating code. `scripts/` are tools to run
+(scaffolding, QoS checking, launch validation), not reading material.
+When domains intersect (e.g. Nav2 + ros2_control) and recommendations
+conflict, favor safety > determinism > simplicity.
 
 **Execution log (opt-in):** When the Stop hook runs (Claude Code only) *and*
 the `SKILL_RUNS_LOG` environment variable is set, a session summary is
@@ -128,7 +121,9 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 > relying on this table. When you update it, change both `LAST_UPDATED` and
 > `NEXT_REVIEW` comments above.
 
-Always ask which ROS 2 distribution the user targets. Key differences:
+Identify which ROS 2 distribution the user targets — from the workspace
+(Dockerfile, CI config, `/opt/ros/<distro>`) when possible, or by asking
+when it is not inferable. Key differences:
 
 | Feature                   | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Lyrical (LTS)      | Rolling            |
 |---------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
