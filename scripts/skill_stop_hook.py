@@ -23,9 +23,16 @@ only when the SKILL_RUNS_LOG environment variable is set (see
 _resolve_log_path). Without the opt-in the hook never writes to the
 workspace, so a read-only session leaves the working tree untouched.
 
+This hook is advisory by design and never prevents the session from
+stopping. On a Stop hook, exit code 2 is the blocking code — it tells
+Claude Code to keep going instead of stopping — so a validator that
+exited 2 on findings would refuse to let the session end until the
+workspace happened to lint clean. Exit code 1 reports the failure without
+that risk, at the cost of being non-blocking (Claude Code proceeds).
+
 Exit codes:
     0 — All checks passed (warnings/advisories do not fail the hook)
-    1 — Validation errors found (reported to stdout as JSON)
+    1 — Validation errors found (reported to stdout as JSON); non-blocking
 """
 
 import json
@@ -108,18 +115,170 @@ def find_generated_launch_files(workspace):
     return launch_files
 
 
+# What the module-level name ends up bound to once the module has finished
+# executing. The loader reads the attribute *after* that, so what matters is
+# the final state, not whether some valid definition appeared at any point.
+_MISSING = 'missing'
+_SYNC = 'sync'              # callable and not a coroutine function — good
+_ASYNC = 'async'            # returns a coroutine, not a LaunchDescription
+_NON_CALLABLE = 'non_callable'   # bound, but to None/a literal/a module
+_UNKNOWN = 'unknown'        # depends on a branch we cannot evaluate
+
+
+def _classify_value(value, symbols):
+    """State that assigning *value* leaves the target in."""
+    if isinstance(value, ast.Lambda):
+        return _SYNC
+    if isinstance(value, (ast.Constant, ast.Dict, ast.List, ast.Tuple,
+                          ast.Set, ast.JoinedStr)):
+        # None, strings, numbers, containers — bound but uncallable.
+        return _NON_CALLABLE
+    if isinstance(value, ast.Name):
+        # An alias is only as good as its target, so `x = None` followed by
+        # `generate_launch_description = x` is just as broken as assigning
+        # None directly, and aliasing a local `async def` is as broken as
+        # declaring the entry point async. A name this module never bound
+        # (a star-import, say) is unresolvable, so assume the author meant
+        # a callable rather than inventing a failure.
+        return symbols.get(value.id, _SYNC)
+    if isinstance(value, (ast.Attribute, ast.Call, ast.Subscript)):
+        return _SYNC  # cannot resolve; assume the author meant a callable
+    return _UNKNOWN
+
+
+def _is_falsy_literal(test):
+    """True for `if False:` / `if 0:` — a branch that never runs."""
+    return isinstance(test, ast.Constant) and not test.value
+
+
+def _is_truthy_literal(test):
+    return isinstance(test, ast.Constant) and bool(test.value)
+
+
+def _merge_symbols(variants):
+    """Combine per-branch symbol tables; disagreement means unknown."""
+    merged = {}
+    for name in set().union(*(set(v) for v in variants)):
+        states = {v.get(name, _MISSING) for v in variants}
+        merged[name] = states.pop() if len(states) == 1 else _UNKNOWN
+    return merged
+
+
+def _module_symbols(body, symbols=None):
+    """Map every module-scope name to what it is bound to after *body*.
+
+    Statements are processed in order and later bindings overwrite earlier
+    ones, because that is what the interpreter does: a file that defines
+    the entry point and then rebinds it to None exports None. Stopping at
+    the first valid definition — as this check used to — accepts exactly
+    that file.
+
+    Only module-scope statements bind module attributes, so `if`/`try`/
+    `with` are descended into but functions and classes are not. Tracking
+    every name rather than just the entry point is what lets an alias be
+    resolved through however many hops it takes.
+    """
+    if symbols is None:
+        symbols = {}
+
+    for node in body:
+        if isinstance(node, ast.FunctionDef):
+            symbols[node.name] = _SYNC
+        elif isinstance(node, ast.AsyncFunctionDef):
+            symbols[node.name] = _ASYNC
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                # Cannot see the other module; assume a real function.
+                symbols[alias.asname or alias.name] = _SYNC
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # `import pkg as name` binds a module, which is not callable.
+                bound = alias.asname or alias.name.split('.')[0]
+                symbols[bound] = _NON_CALLABLE
+        elif isinstance(node, ast.Assign):
+            value_state = _classify_value(node.value, symbols)
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    symbols[target.id] = value_state
+        elif isinstance(node, ast.AnnAssign):
+            # A bare annotation (`generate_launch_description: object`)
+            # binds nothing — it neither creates nor destroys a binding.
+            if node.value is not None and isinstance(node.target, ast.Name):
+                symbols[node.target.id] = _classify_value(node.value, symbols)
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    symbols.pop(target.id, None)
+        elif isinstance(node, ast.If):
+            # A literal test means one branch is dead code; otherwise both
+            # are reachable and a name is definite only where they agree.
+            if _is_falsy_literal(node.test):
+                _module_symbols(node.orelse, symbols)
+            elif _is_truthy_literal(node.test):
+                _module_symbols(node.body, symbols)
+            else:
+                taken = _module_symbols(node.body, dict(symbols))
+                skipped = _module_symbols(node.orelse, dict(symbols))
+                symbols.clear()
+                symbols.update(_merge_symbols([taken, skipped]))
+        elif isinstance(node, ast.Try):
+            # The body may abort part-way, so a binding made there is not
+            # guaranteed. Definite only where every path agrees.
+            variants = [_module_symbols(node.body + node.orelse,
+                                        dict(symbols))]
+            for handler in node.handlers:
+                variants.append(_module_symbols(handler.body, dict(symbols)))
+            symbols.clear()
+            symbols.update(_merge_symbols(variants))
+            _module_symbols(node.finalbody, symbols)
+        elif isinstance(node, ast.With):
+            _module_symbols(node.body, symbols)
+
+    return symbols
+
+
+def _entry_point_state(body, wanted):
+    """What *wanted* is bound to once the module has finished executing."""
+    return _module_symbols(body).get(wanted, _MISSING)
+
+
 def validate_launch_file_syntax(filepath):
     """Check that a launch file is valid Python and has generate_launch_description."""
     issues = []
+    entry = 'generate_launch_description'
     try:
         with open(filepath, 'r', encoding='utf-8') as fh:
             source = fh.read()
         tree = ast.parse(source, filename=filepath)
-        func_names = [
-            node.name for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef)
-        ]
-        if 'generate_launch_description' not in func_names:
+        state = _entry_point_state(tree.body, entry)
+        if state == _ASYNC:
+            issues.append({
+                'file': filepath,
+                'severity': 'error',
+                'message': (f'{entry} resolves to a coroutine function — the '
+                            f'launch loader calls it directly and would get a '
+                            f'coroutine, not a LaunchDescription'),
+            })
+        elif state == _NON_CALLABLE:
+            issues.append({
+                'file': filepath,
+                'severity': 'error',
+                'message': (f'{entry} ends up bound to something that is not '
+                            f'callable — the launch loader calls whatever the '
+                            f'module exports under that name'),
+            })
+        elif state == _UNKNOWN:
+            # Only some execution paths bind it. Not provably broken, so a
+            # warning rather than an error: the hook must not fail a launch
+            # file whose guard is always true in practice.
+            issues.append({
+                'file': filepath,
+                'severity': 'warning',
+                'message': (f'{entry} is only bound on some execution paths '
+                            f'— the launch loader fails on any path that '
+                            f'leaves it unset'),
+            })
+        elif state != _SYNC:
             issues.append({
                 'file': filepath,
                 'severity': 'error',
@@ -361,7 +520,11 @@ def _resolve_workspace():
                     cwd = payload.get('cwd')
                     if cwd and os.path.isdir(cwd):
                         return cwd
-        except (json.JSONDecodeError, OSError, Exception):  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - workspace detection is best-effort
+            # Deliberately broad: a malformed or unreadable payload must
+            # fall through to the env/cwd resolution below, never crash the
+            # hook. (Listing JSONDecodeError/OSError alongside Exception, as
+            # this used to, was redundant - Exception already covers them.)
             pass
 
     project_dir = os.environ.get('CLAUDE_PROJECT_DIR')
@@ -380,7 +543,7 @@ def _git_touched_paths(workspace):
     """
     try:
         proc = subprocess.run(
-            ['git', '-C', workspace, 'status', '--porcelain',
+            ['git', '-C', workspace, 'status', '--porcelain', '-z',
              '--untracked-files=all', '--no-renames'],
             capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
@@ -388,12 +551,16 @@ def _git_touched_paths(workspace):
     if proc.returncode != 0:
         return None
     paths = set()
-    for line in proc.stdout.splitlines():
-        # Porcelain v1: two status chars, a space, then the path
-        # (quoted if it contains special characters).
-        p = line[3:].strip()
-        if p.startswith('"') and p.endswith('"'):
-            p = p[1:-1]
+    # `-z` gives NUL-terminated records and, crucially, leaves paths
+    # verbatim: the default output quotes and C-escapes any path with a
+    # space, a newline, or a non-ASCII byte. Unquoting that by stripping
+    # the surrounding quotes leaves `\n` and `\303\251` escapes intact, so
+    # the reconstructed path matches nothing on disk and the file silently
+    # drops out of validation. `--no-renames` keeps every record to a
+    # single path field.
+    for record in proc.stdout.split('\0'):
+        # Porcelain v1: two status chars, a space, then the path.
+        p = record[3:]
         if p:
             paths.add(os.path.realpath(os.path.join(workspace, p)))
     return paths
@@ -483,7 +650,18 @@ def main():
             pass  # logging is best-effort; never fail the hook over it
 
     print(json.dumps(result, indent=2))
-    sys.exit(1 if result['status'] == 'fail' else 0)
+
+    if result['status'] != 'fail':
+        sys.exit(0)
+
+    # Exit 1 is non-blocking, and for a non-blocking failure Claude Code
+    # surfaces stderr — not the stdout JSON above. Without this the user
+    # sees a bare "hook error" with no indication of which file is broken,
+    # so the errors are repeated on the channel that is actually shown.
+    for issue in all_issues:
+        if issue['severity'] == 'error':
+            print(f"{issue['file']}: {issue['message']}", file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == '__main__':

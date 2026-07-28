@@ -2,7 +2,17 @@ name: Test
 
 on:
   push:
-    branches: [main, master, 'claude/**', 'docs/**']
+    branches:
+      - main
+      - master
+      # Conventional-Commit branch prefixes (see CLAUDE.md "Branch names").
+      - 'feat/**'
+      - 'fix/**'
+      - 'docs/**'
+      - 'test/**'
+      - 'ci/**'
+      - 'chore/**'
+      - 'refactor/**'
   pull_request:
     branches: [main, master]
 
@@ -10,6 +20,84 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # -------------------------------------------------------
+  # Job 0: Commit message policy (CLAUDE.md "Commit messages")
+  #
+  # This is the authoritative check. The PreToolUse hook in .claude/ only
+  # sees Bash command strings, so it misses `git commit -F`, editor-typed
+  # messages, and anything committed outside Claude Code. This job reads
+  # the real commit objects on the branch instead.
+  # -------------------------------------------------------
+  commit-messages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Reject tool-attribution trailers
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REF_NAME: ${{ github.ref_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          # Only ever inspect the commits this push or PR adds. Scanning all
+          # of history would fail the build on messages that predate the rule
+          # and can no longer be changed without a rewrite.
+          zero=0000000000000000000000000000000000000000
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            range="${BASE_SHA}..${HEAD_SHA}"
+          elif [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+            # On the default branch, origin/<default> already points at the
+            # new tip, so a origin/<default>..HEAD range is always empty and
+            # would check nothing. `before` is the pre-push tip.
+            if [ -n "${BEFORE_SHA}" ] && [ "${BEFORE_SHA}" != "${zero}" ] \
+               && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+              range="${BEFORE_SHA}..${HEAD_SHA}"
+            else
+              range="${HEAD_SHA}~1..${HEAD_SHA}"
+            fi
+          elif git rev-parse --verify --quiet \
+               "origin/${DEFAULT_BRANCH}" >/dev/null 2>&1; then
+            # Feature branch: check everything it adds on top of the default
+            # branch, not just the commits in this one push.
+            range="origin/${DEFAULT_BRANCH}..${HEAD_SHA}"
+          else
+            range="${HEAD_SHA}~1..${HEAD_SHA}"
+          fi
+          echo "Inspecting ${range}"
+          # No `|| true` here on purpose. A range this job cannot resolve
+          # means the gate did not run; swallowing that would report
+          # "no new commits" and pass, which is the one outcome a policy
+          # check must never produce by accident. An empty but valid range
+          # still succeeds and yields an empty list.
+          commits="$(git rev-list "${range}")"
+          if [ -z "${commits}" ]; then
+            echo "No new commits to inspect."
+          fi
+          failed=0
+          for sha in ${commits}; do
+            msg="$(git log -1 --format=%B "${sha}")"
+            # Anchored to line starts: a trailer is a line, and matching
+            # anywhere would reject a commit whose body names the rule.
+            if printf '%s' "${msg}" | grep -qiE \
+              '^[ >*+-]*(co-authored-by:|claude-session:|(🤖 *)?generated with|(🤖 *)?created with)|https?://claude\.ai/|🤖'
+            then
+              echo "::error::${sha} carries a tool-attribution trailer"
+              printf '%s\n' "${msg}" | head -20
+              failed=1
+            fi
+          done
+          if [ "${failed}" -ne 0 ]; then
+            echo "See CLAUDE.md 'Commit messages'." >&2
+            exit 1
+          fi
+          echo "No tool-attribution trailers found."
+
   # -------------------------------------------------------
   # Job 1: Static analysis (flake8 + mypy)
   # -------------------------------------------------------
@@ -23,12 +111,17 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
       - name: flake8
-        run: flake8 scripts/ tests/
+        run: flake8 scripts/ tests/ .claude/hooks/
       - name: mypy
         run: mypy scripts/ --ignore-missing-imports
       - name: pip-audit (current environment)
         # Best-effort dependency vulnerability scan over the installed env.
-        # Non-blocking: advisories are surfaced for awareness, not enforcement.
+        # Deliberately non-blocking, and it is NOT a gate: the audit covers
+        # whatever the runner image ships (setuptools, wheel, urllib3, ...),
+        # so unrelated advisories would otherwise redden every PR. What this
+        # project actually enforces is the version floors in
+        # requirements-dev.txt — when an advisory here names one of our own
+        # dependencies, raise its floor there.
         continue-on-error: true
         run: pip-audit --desc
 
@@ -62,9 +155,11 @@ jobs:
   # -------------------------------------------------------
   # Job 3: ROS 2 distro integration tests (Docker-based)
   #
-  # `rolling` is built against a date-pinned snapshot of packages.ros.org
-  # (see tests/Dockerfile.ros2-test) so transient upstream package-set
-  # inconsistencies don't leak into the CI signal.
+  # `rolling` cannot be date-pinned — snapshots.ros.org does not publish the
+  # URL pattern apt expects for it. Instead, tests/Dockerfile.ros2-test
+  # source-overlays the upstream repos whose binaries are currently
+  # inconsistent (rosidl*, control_msgs, ros2_control) onto /opt/ros/rolling,
+  # so transient upstream package-set breakage doesn't leak into the signal.
   # -------------------------------------------------------
   ros2-integration:
     runs-on: ubuntu-latest

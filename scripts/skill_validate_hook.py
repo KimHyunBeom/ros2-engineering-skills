@@ -32,9 +32,26 @@ Scope and limits — read before relying on this:
   This is intentional: the hook errs on the side of false positives over
   false negatives.
 
-Exit codes:
+Exit codes differ by mode, because the two modes answer to different
+contracts:
+
+* **Event mode** speaks Claude Code's hook protocol. Only exit code **2**
+  blocks a tool call — the docs are explicit that "Claude Code treats exit
+  code 1 as a non-blocking error and proceeds with the action". On exit 2
+  the reason is written to **stderr**, which is the channel Claude Code
+  reads, and nothing is written to stdout: this module's JSON report is
+  its own shape rather than the documented hook-output schema, and pairing
+  unrecognized JSON with a blocking exit is the combination that can be
+  downgraded to non-blocking.
+
+    0 — No blocking issues found (JSON report on stdout)
+    2 — Blocking issue detected; the tool call is refused (reason on stderr)
+
+* **Manual mode** is an ordinary CLI, where a non-zero exit means "issues
+  found" in the usual Unix sense.
+
     0 — No blocking issues found
-    1 — Blocking issue detected (should halt tool execution)
+    1 — Blocking issue detected
 """
 
 import argparse
@@ -553,9 +570,25 @@ def main(argv=None):
         result['debug'] = {**debug, 'tool_name': tool_name,
                            'tool_input_keys': sorted(tool_input.keys())}
 
-    print(json.dumps(result, indent=2))
-
     has_errors = any(i['severity'] == 'error' for i in issues)
+
+    if has_errors and not manual_mode:
+        # Event mode, blocking: exit 2 is the only code Claude Code treats
+        # as a refusal, and it takes the reason from stderr. The report is
+        # deliberately NOT written to stdout here — this JSON is our own
+        # shape, not the documented hook-output schema, and emitting
+        # unrecognized JSON alongside a blocking exit has historically been
+        # the case where a block degrades into a warning. Saying nothing on
+        # stdout leaves only the one channel that is specified.
+        for issue in issues:
+            if issue['severity'] == 'error':
+                print(f"{issue['file']}: {issue['message']}", file=sys.stderr)
+        sys.exit(2)
+
+    # Non-blocking paths keep the machine-readable report: manual mode is a
+    # CLI whose output is the point, and a passing event-mode run has no
+    # exit-code contract to conflict with.
+    print(json.dumps(result, indent=2))
     sys.exit(1 if has_errors else 0)
 
 

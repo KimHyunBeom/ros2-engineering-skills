@@ -36,6 +36,16 @@ from skill_validate_hook import (
 )
 
 
+# Exit code the PreToolUse hook must use to actually refuse a tool call.
+# Claude Code only treats 2 as blocking — it explicitly documents that
+# exit 1 is a non-blocking error and that the action proceeds anyway. A
+# guard returning 1 prints its refusal and then lets `rm -rf /` run, so
+# this constant is the difference between a real gate and a log line.
+# Manual CLI mode (--file/--command) keeps the conventional 1; see
+# TestValidateHookManualCLI.
+BLOCKING_EXIT = 2
+
+
 class TestStopHookLaunchValidation:
     """Test the stop hook's launch file validation."""
 
@@ -60,6 +70,217 @@ class TestStopHookLaunchValidation:
         assert len(issues) == 1
         assert issues[0]['severity'] == 'error'
         assert 'generate_launch_description' in issues[0]['message']
+
+    def test_entry_point_may_be_imported(self, tmp_path):
+        # A launch file that re-exports a shared entry point is valid; only
+        # matching `def` would call this working file broken.
+        launch = tmp_path / 'reexport.launch.py'
+        launch.write_text(
+            'from my_pkg.common import generate_launch_description\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
+
+    def test_entry_point_may_be_an_alias(self, tmp_path):
+        launch = tmp_path / 'alias.launch.py'
+        launch.write_text(
+            'from launch import LaunchDescription\n'
+            'def _build():\n'
+            '    return LaunchDescription([])\n'
+            'generate_launch_description = _build\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
+
+    def test_entry_point_may_be_an_import_alias(self, tmp_path):
+        launch = tmp_path / 'importalias.launch.py'
+        launch.write_text(
+            'from my_pkg.common import build as generate_launch_description\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
+
+    def test_entry_point_may_be_conditional(self, tmp_path):
+        # `if`/`try` bodies still bind at module scope.
+        launch = tmp_path / 'conditional.launch.py'
+        launch.write_text(
+            'import os\n'
+            'if os.environ.get("SIM"):\n'
+            '    def generate_launch_description():\n'
+            '        return None\n'
+            'else:\n'
+            '    def generate_launch_description():\n'
+            '        return None\n'
+        )
+        assert validate_launch_file_syntax(str(launch)) == []
+
+
+class TestStopHookLaunchEntryPointRejections:
+    """The loader imports the module and calls the top-level attribute.
+
+    Anything that is not a module-scope, synchronous, callable binding
+    fails at launch time, so accepting it here would be a silent pass on a
+    broken file — a strictly worse failure than the false positive that
+    only matching `def` used to produce.
+    """
+
+    def _issues(self, tmp_path, name, source):
+        launch = tmp_path / name
+        launch.write_text(source)
+        return validate_launch_file_syntax(str(launch))
+
+    def test_nested_function_is_not_module_scope(self, tmp_path):
+        issues = self._issues(tmp_path, 'nested.launch.py',
+                              'def helper():\n'
+                              '    def generate_launch_description():\n'
+                              '        pass\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_method_on_a_class_is_not_module_scope(self, tmp_path):
+        issues = self._issues(tmp_path, 'method.launch.py',
+                              'class Builder:\n'
+                              '    def generate_launch_description(self):\n'
+                              '        pass\n')
+        assert len(issues) == 1
+
+    def test_async_def_is_reported_specifically(self, tmp_path):
+        issues = self._issues(tmp_path, 'async.launch.py',
+                              'async def generate_launch_description():\n'
+                              '    return None\n')
+        assert len(issues) == 1
+        assert 'coroutine' in issues[0]['message']
+
+    def test_bare_annotation_binds_nothing(self, tmp_path):
+        issues = self._issues(tmp_path, 'annotation.launch.py',
+                              'generate_launch_description: object\n')
+        assert len(issues) == 1
+
+    def test_assigned_none_is_not_callable(self, tmp_path):
+        issues = self._issues(tmp_path, 'none.launch.py',
+                              'generate_launch_description = None\n')
+        assert len(issues) == 1
+
+    def test_assigned_literal_is_not_callable(self, tmp_path):
+        issues = self._issues(tmp_path, 'literal.launch.py',
+                              'generate_launch_description = "nope"\n')
+        assert len(issues) == 1
+
+    def test_plain_import_alias_binds_a_module(self, tmp_path):
+        issues = self._issues(tmp_path, 'modalias.launch.py',
+                              'import my_pkg as generate_launch_description\n')
+        assert len(issues) == 1
+
+    # The loader reads the attribute after the module has finished running,
+    # so what matters is the final binding. A check that returned as soon as
+    # it saw one valid definition accepted every case below.
+
+    def test_valid_function_rebound_to_none_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'rebound.launch.py',
+                              'from launch import LaunchDescription\n'
+                              'def generate_launch_description():\n'
+                              '    return LaunchDescription([])\n'
+                              '\n'
+                              'generate_launch_description = None\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'callable' in issues[0]['message']
+
+    def test_valid_function_rebound_to_literal_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'reboundstr.launch.py',
+                              'def generate_launch_description():\n'
+                              '    return None\n'
+                              'generate_launch_description = "later"\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+
+    def test_alias_to_local_async_function_is_rejected(self, tmp_path):
+        # The alias is only as good as its target.
+        issues = self._issues(tmp_path, 'asyncalias.launch.py',
+                              'async def _build():\n'
+                              '    return None\n'
+                              'generate_launch_description = _build\n')
+        assert len(issues) == 1
+        assert 'coroutine' in issues[0]['message']
+
+    def test_definition_inside_false_branch_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'deadbranch.launch.py',
+                              'if False:\n'
+                              '    def generate_launch_description():\n'
+                              '        return None\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_deleted_entry_point_is_rejected(self, tmp_path):
+        issues = self._issues(tmp_path, 'deleted.launch.py',
+                              'def generate_launch_description():\n'
+                              '    return None\n'
+                              'del generate_launch_description\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_alias_through_a_variable_resolves(self, tmp_path):
+        # Tracking only the entry point's own name missed this: `value` had
+        # no recorded state, so the alias was assumed callable.
+        issues = self._issues(tmp_path, 'indirect.launch.py',
+                              'value = None\n'
+                              'generate_launch_description = value\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'callable' in issues[0]['message']
+
+    def test_chained_async_alias_resolves(self, tmp_path):
+        issues = self._issues(tmp_path, 'chained.launch.py',
+                              'async def _build():\n'
+                              '    return None\n'
+                              'mid = _build\n'
+                              'generate_launch_description = mid\n')
+        assert len(issues) == 1
+        assert 'coroutine' in issues[0]['message']
+
+    def test_helper_differing_across_branches_is_not_definite(self, tmp_path):
+        # The helper is async on one path and sync on the other, so the
+        # alias cannot be called definitely correct.
+        issues = self._issues(tmp_path, 'helperbranch.launch.py',
+                              'import os\n'
+                              'if os.environ.get("SIM"):\n'
+                              '    async def _build():\n'
+                              '        return None\n'
+                              'else:\n'
+                              '    def _build():\n'
+                              '        return None\n'
+                              'generate_launch_description = _build\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+
+    def test_chained_sync_alias_still_passes(self, tmp_path):
+        assert self._issues(tmp_path, 'chainok.launch.py',
+                            'def _build():\n'
+                            '    return None\n'
+                            'mid = _build\n'
+                            'generate_launch_description = mid\n') == []
+
+    def test_try_except_import_fallback_passes(self, tmp_path):
+        # Both paths bind it, so the outcome is definite.
+        assert self._issues(tmp_path, 'fallback.launch.py',
+                            'try:\n'
+                            '    from a import generate_launch_description\n'
+                            'except ImportError:\n'
+                            '    from b import generate_launch_description\n'
+                            ) == []
+
+    def test_conditionally_bound_entry_point_is_a_warning(self, tmp_path):
+        """Bound on one path only — not provably broken, not provably fine.
+
+        Erroring here would fail a launch file whose guard is always true
+        in practice; staying silent would hide a real half-defined entry
+        point. A warning says what is known without failing the hook.
+        """
+        issues = self._issues(tmp_path, 'maybe.launch.py',
+                              'import os\n'
+                              'if os.environ.get("SIM"):\n'
+                              '    def generate_launch_description():\n'
+                              '        return None\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'warning'
+        assert 'some execution paths' in issues[0]['message']
 
     def test_syntax_error(self, tmp_path):
         launch = tmp_path / 'syntax.launch.py'
@@ -267,6 +488,26 @@ class TestStopHookCLI:
         data = json.loads(result.stdout)
         assert data['status'] == 'pass'
 
+    def test_failure_reason_reaches_stderr(self, tmp_path):
+        """Exit 1 is non-blocking, and Claude Code shows stderr for it.
+
+        The stdout JSON is the machine-readable report, but it is not what
+        the user is shown on a non-blocking hook failure — without a stderr
+        copy the session ends with a bare "hook error" and no clue which
+        file is broken.
+        """
+        (tmp_path / 'broken.launch.py').write_text(
+            'def not_the_entry_point():\n    pass\n')
+        result = subprocess.run(
+            [sys.executable,
+             os.path.join(SCRIPTS_DIR, 'skill_stop_hook.py')],
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
+            env={**os.environ, 'SKILL_WORKSPACE': str(tmp_path)})
+        assert result.returncode == 1
+        assert json.loads(result.stdout)['status'] == 'fail'
+        assert 'broken.launch.py' in result.stderr
+        assert 'generate_launch_description' in result.stderr
+
     def test_git_touched_paths_non_repo_returns_none(self, tmp_path):
         assert _git_touched_paths(str(tmp_path)) is None
 
@@ -281,6 +522,25 @@ class TestStopHookCLI:
         assert touched is not None
         assert os.path.realpath(str(tmp_path / 'tracked.txt')) in touched
         assert os.path.realpath(str(tmp_path / 'new file.txt')) in touched
+
+    def test_git_touched_paths_handles_escaped_non_ascii(self, tmp_path):
+        """Non-ASCII paths must survive the porcelain round-trip.
+
+        With core.quotePath at its default, `git status --porcelain`
+        renders `café.txt` as `"caf\\303\\251.txt"`. Stripping the quotes
+        without undoing the octal escapes yields a path that exists
+        nowhere, so the file drops out of the touched set and is never
+        validated — a silent gap, since the hook then just reports fewer
+        files. Passing `-z` sidesteps the quoting entirely.
+        """
+        self._git(tmp_path, 'init', '-q')
+        (tmp_path / 'café.txt').write_text('n', encoding='utf-8')
+        (tmp_path / 'naïve node.launch.py').write_text('x', encoding='utf-8')
+        touched = _git_touched_paths(str(tmp_path))
+        assert touched is not None
+        assert os.path.realpath(str(tmp_path / 'café.txt')) in touched
+        assert os.path.realpath(
+            str(tmp_path / 'naïve node.launch.py')) in touched
 
     def test_untracked_broken_file_still_fails(self, tmp_path):
         # In a git workspace, a broken file the session just created
@@ -658,30 +918,26 @@ class TestPowerShellToolName:
 
     def test_powershell_destructive_blocked(self):
         result = self._run('PowerShell', 'Remove-Item -Recurse -Force C:/')
-        assert result.returncode == 1, \
+        assert result.returncode == BLOCKING_EXIT, \
             'PowerShell tool name must route to dangerous-command check'
-        data = json.loads(result.stdout)
-        assert data['status'] == 'fail'
+        assert 'Refusing' in result.stderr
 
     def test_pwsh_destructive_blocked(self):
         result = self._run('pwsh', 'Format-Volume -DriveLetter C')
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data['status'] == 'fail'
+        assert result.returncode == BLOCKING_EXIT
+        assert 'Refusing' in result.stderr
 
     def test_cmd_destructive_blocked(self):
         result = self._run('cmd', 'rmdir /s /q C:\\')
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data['status'] == 'fail'
+        assert result.returncode == BLOCKING_EXIT
+        assert 'Refusing' in result.stderr
 
     def test_bash_destructive_still_blocked(self):
         # Regression guard: PowerShell additions must not have weakened the
         # existing bash branch.
         result = self._run('Bash', 'rm -rf /')
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data['status'] == 'fail'
+        assert result.returncode == BLOCKING_EXIT
+        assert 'Refusing' in result.stderr
 
     def test_rm_rf_root_cli(self):
         """Test via CLI that rm -rf / is blocked."""
@@ -693,9 +949,12 @@ class TestPowerShellToolName:
             env={**os.environ,
                  'TOOL_NAME': 'Bash', 'TOOL_INPUT': tool_input},
         )
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data['status'] == 'fail'
+        assert result.returncode == BLOCKING_EXIT
+        # The reason must be on stderr, the channel Claude Code reads for a
+        # blocking exit, and stdout must stay empty: unrecognized JSON
+        # alongside exit 2 is what can turn a block back into a warning.
+        assert 'root filesystem' in result.stderr
+        assert result.stdout.strip() == ''
 
 
 class TestValidateHookCLI:
@@ -756,9 +1015,9 @@ class TestValidateHookCLI:
             env={**os.environ,
                  'TOOL_NAME': 'Bash', 'TOOL_INPUT': tool_input},
         )
-        assert result.returncode == 1
-        data = json.loads(result.stdout)
-        assert data['status'] == 'fail'
+        assert result.returncode == BLOCKING_EXIT
+        assert 'ROS installation' in result.stderr
+        assert result.stdout.strip() == ''
 
     def test_output_is_valid_json(self):
         result = subprocess.run(
@@ -926,7 +1185,7 @@ class TestValidateHookMainDirect:
         }))
         with _pytest.raises(SystemExit) as exc_info:
             main(argv=[])
-        assert exc_info.value.code == 1
+        assert exc_info.value.code == BLOCKING_EXIT
 
     def test_main_bash_safe(self, monkeypatch):
         import pytest as _pytest
@@ -997,10 +1256,9 @@ class TestClaudeCodeStdinPayload:
             'tool_name': 'Bash',
             'tool_input': {'command': 'rm -rf /'},
         })
-        assert r.returncode == 1
-        data = json.loads(r.stdout)
-        assert data['status'] == 'fail'
-        assert data['issues_count'] >= 1
+        assert r.returncode == BLOCKING_EXIT
+        assert 'root filesystem' in r.stderr
+        assert r.stdout.strip() == ''
 
     def test_stdin_powershell_destructive_blocks(self):
         r = self._run_stdin({
@@ -1009,7 +1267,7 @@ class TestClaudeCodeStdinPayload:
             'tool_name': 'Bash',  # Claude Code surfaces shell calls as Bash
             'tool_input': {'command': 'Remove-Item -Recurse -Force C:/'},
         })
-        assert r.returncode == 1
+        assert r.returncode == BLOCKING_EXIT
 
     def test_stdin_edit_antipattern_warns_passes(self):
         r = self._run_stdin({
@@ -1100,7 +1358,7 @@ class TestClaudeCodeStdinPayload:
                  'TOOL_INPUT': '{"file_path":"/tmp/x.py","content":"clean"}'},
         )
         # Stdin has destructive Bash -> must block, even though env says Write.
-        assert r.returncode == 1
+        assert r.returncode == BLOCKING_EXIT
 
     def test_debug_mode_emits_debug_info(self):
         r = subprocess.run(
@@ -1629,6 +1887,38 @@ class TestValidateHookManualCLI:
         assert data['mode'] == 'event'
         assert data['status'] == 'pass'
         assert data['checks_skipped'] == []
+
+    def test_manual_and_event_modes_use_different_blocking_exit_codes(self):
+        """The two modes answer to different contracts, deliberately.
+
+        Manual mode is a plain CLI: non-zero means "issues found", it
+        reports on stdout, and README documents `--command 'rm -rf /'` as
+        exit 1. Event mode speaks Claude Code's hook protocol, where only
+        exit 2 refuses the tool call, the reason has to be on stderr, and
+        stdout stays empty. Collapsing the two back into one shape
+        silently breaks whichever contract loses.
+        """
+        same_command = 'rm -rf /'
+
+        manual = self._run('--command', same_command)
+        assert manual.returncode == 1
+        assert json.loads(manual.stdout)['mode'] == 'manual'
+        assert manual.stderr.strip() == ''
+
+        event = subprocess.run(
+            [sys.executable, self.HOOK],
+            input=json.dumps({
+                'hook_event_name': 'PreToolUse',
+                'tool_name': 'Bash',
+                'tool_input': {'command': same_command},
+            }),
+            capture_output=True, text=True, timeout=10,
+            env={k: v for k, v in os.environ.items()
+                 if k not in ('TOOL_NAME', 'TOOL_INPUT')},
+        )
+        assert event.returncode == BLOCKING_EXIT
+        assert 'Refusing' in event.stderr
+        assert event.stdout.strip() == ''
 
 
 class TestDistroOrderingLyrical:
