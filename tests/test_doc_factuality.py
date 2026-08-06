@@ -895,6 +895,65 @@ class TestBagSplittingIsNotRetention:
         assert 'Rolling bag of the chain' not in section
 
 
+class TestNoDefinedCommandPriority:
+    """Multiple publishers on a command topic is a real hazard, but "last
+    writer wins" describes a rule the middleware does not define. Pinned
+    overclaim: the actuator "follows whichever arrived last", which reads
+    as deterministic arbitration where there is none."""
+
+    def test_safety_estop_states_there_is_no_defined_priority(self):
+        section = _flat(_md_section(
+            SAFETY_ESTOP_MD, 'Zero on a topic is not a stopped robot'))
+        assert 'no defined command priority' in section
+        assert 'arrived last' not in section
+        assert 'processing timing' in section
+
+    def test_navigation_matches(self):
+        content = _flat(_read(NAVIGATION_MD))
+        assert 'no defined command priority on the topic' in content
+        assert 'last-writer-wins' not in content
+
+    def test_safety_failure_table_does_not_claim_last_writer_wins(self):
+        """The failures table is where the old phrasing survived a first
+        pass: the prose section was corrected while the table still said
+        "last writer wins at 20 Hz"."""
+        section = _flat(_md_section(
+            SAFETY_ESTOP_MD, 'Common failures and fixes'))
+        assert 'last writer wins' not in section.lower()
+
+    def test_runtime_provenance_states_no_defined_priority(self):
+        section = _flat(_md_section(
+            RUNTIME_PROVENANCE_MD, 'Who actually publishes this topic?'))
+        assert 'last-writer-wins' not in section.lower()
+        assert 'no defined command priority' in section.lower()
+
+
+class TestSmootherDeadbandPitfallIsGeneric:
+    """Upstream nav2_velocity_smoother assigns last_cmd_ from the
+    rate-limited value BEFORE applying deadband_velocities_ (verified on
+    humble and main), so the ramp still accumulates. The pitfall is about
+    hand-rolled/open-loop smoothers and must not be written as an upstream
+    defect."""
+
+    def test_navigation_md_credits_upstream_ordering(self):
+        content = _read(NAVIGATION_MD)
+        assert 'last_cmd_' in content
+        assert re.search(
+            r'before.{0,40}`?deadband_velocities_`?', content), (
+            'navigation.md must state that last_cmd_ is assigned before the '
+            'deadband is applied')
+
+    def test_pitfall_row_does_not_blame_upstream_nav2(self):
+        row = _skill_row("open-loop smoother's feedback path")
+        assert 'nav2_velocity_smoother' in row and 'before' in row, (
+            'the row must cite upstream ordering as the correct reference')
+        lowered = row.lower()
+        for wrong in ('nav2 bug', 'nav2 defect', 'nav2 issue'):
+            assert wrong not in lowered, (
+                f'the deadband row must not describe upstream nav2 as '
+                f'defective: {wrong!r}')
+
+
 class TestDistroDetectionOrder:
     """Detection comes before asking, and the latest-LTS default applies to
     greenfield projects only. Pinned error: Principle 1 told the agent to
