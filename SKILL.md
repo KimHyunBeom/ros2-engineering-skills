@@ -12,7 +12,7 @@ description: >
 context: fork
 classification: capability
 category: api-reference
-version: 1.2.0
+version: 1.3.0
 deprecation-risk: medium
 # The hooks block below is Claude Code-specific: the hook schema, the
 # ${CLAUDE_PLUGIN_ROOT} path variable, and the tool-name matcher are not
@@ -96,6 +96,8 @@ nothing on its own).
 | Sensor drivers, clock sync, LiDAR-camera extrinsics | `references/sensor-integration.md` |
 | Unit tests, integration tests, launch_testing, CI | `references/testing.md`          |
 | ros2 doctor, tracing, profiling, rosbag2, CLI cheat sheet | `references/debugging.md` |
+| "Which install/config/publisher is actually running?" audits | `references/runtime-provenance.md` |
+| Faults crossing ROS and non-ROS layers (link, bridge, driver) | `references/system-diagnostics.md` |
 | Docker, cross-compile, fleet deployment, OTA      | `references/deployment.md`       |
 | System bringup, udev rules, boot sequence, watchdogs | `references/system-bringup.md` |
 | Gazebo, Isaac Sim, sim-to-real, use_sim_time      | `references/simulation.md`       |
@@ -124,9 +126,27 @@ These apply to every ROS 2 artifact you produce, regardless of domain.
 > relying on this table. When you update it, change both `LAST_UPDATED` and
 > `NEXT_REVIEW` comments above.
 
-Identify which ROS 2 distribution the user targets — from the workspace
-(Dockerfile, CI config, `/opt/ros/<distro>`) when possible, or by asking
-when it is not inferable. Key differences:
+Detect the distro before generating code — do not ask first, and do not
+assume the newest release. Work down this ladder and stop at the first
+answer:
+
+1. **Active shell:** `echo $ROS_DISTRO` — the distro currently sourced.
+   `ls /opt/ros/` is *inventory evidence* (what is installed), never an
+   automatic selection.
+2. **Workspace pin:** Dockerfile `FROM ros:<distro>`, CI matrix, `.repos`
+   branch names — what the workspace intends to build and deploy against.
+   (`package.xml` usually shows dependencies without naming a distro.)
+3. **Installed versions:** `ros2 pkg xml <pkg>`, `dpkg-query -W 'ros-*'`
+   (Principle 11) — this also settles behavior the distro label does not.
+4. **Ask the user** when the workspace holds no evidence.
+5. **Greenfield only:** default to the latest LTS.
+
+**Conflict rule.** When active-shell evidence disagrees with the workspace
+pin, report both and select neither silently. Prefer the workspace's
+explicit build/deployment pin for guidance about the repository, and treat
+the shell mismatch as an environment defect to resolve. Never resolve an
+*existing* workspace to the newest LTS: that pulls API the installed stack
+does not have. Key differences:
 
 | Feature                   | Humble (LTS)       | Jazzy (LTS)        | Kilted (non-LTS)   | Lyrical (LTS)      | Rolling            |
 |---------------------------|--------------------|--------------------|--------------------|--------------------|--------------------|
@@ -147,7 +167,7 @@ reference only — see the migration notes below. The pre-Lyrical
 release that ships it; Lyrical adds the separate, non-experimental
 `rclcpp::executors::EventsCBGExecutor`.
 
-When the user does not specify, default to the latest LTS — **Lyrical Luth**
+For a greenfield project with no constraint, the latest LTS is **Lyrical Luth**
 (Ubuntu 26.04); use **Jazzy** when the target platform is Ubuntu 24.04.
 Pin the exact distro in Dockerfile, CI, and documentation so builds are reproducible.
 
@@ -221,8 +241,19 @@ Start from these profiles and adjust per use case:
 | Action feedback       | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | —           | —           |
 | Safety heartbeat      | RELIABLE      | VOLATILE         | KEEP_LAST | 1   | 500 ms      | 1 s         |
 
+These rows are **starting points, not verdicts**. The sensor row matches
+`rmw_qos_profile_sensor_data` (BEST_EFFORT, depth 5), which fits a
+high-rate stream whose consumer only wants the newest sample — but depth
+follows the consumer's tolerance for staleness and its processing time,
+and a sensor whose loss the system cannot detect (a safety-relevant scan,
+a one-shot calibration) belongs on RELIABLE. Decide per data path, then
+record why.
+
 QoS mismatches are the #1 cause of "I published but nobody receives."
 Always check compatibility with `ros2 topic info -v` when debugging.
+Matching QoS is necessary for communication, but compatibility alone does
+not prove that the delivered data is timely, semantically valid, or safe to
+act on (Principle 13).
 
 **DEADLINE and LIFESPAN** are critical for safety-critical systems. DEADLINE fires an
 event when no message arrives within the specified period (detect stale data). LIFESPAN
@@ -287,6 +318,14 @@ transitions also enable hardware-safe config validation
 (`references/testing.md` section 4). Full state diagram and callbacks:
 `references/lifecycle-components.md`.
 
+A plain node is the right call when nothing external is at stake or the
+managed state machine cannot be honored: leaf compute nodes that own no
+device, file handle, or actuator; nodes whose start/stop is already
+sequenced by an outer supervisor; third-party nodes you do not control;
+and rclc/micro-ROS targets with limited lifecycle support. Lifecycle is
+not free — every managed node needs something to manage it, and adds
+transition-failure states the system must handle.
+
 ### 10. Build and CI hygiene
 
 - Use `colcon build --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo` for
@@ -295,8 +334,19 @@ transitions also enable hardware-safe config validation
 - Run `colcon test` with `--event-handlers console_cohesion+` so test
   output groups by package.
 - Pin rosdep keys in `rosdep.yaml` for reproducible dependency resolution.
-- Cache `/opt/ros/`, `.ccache/`, and `build/`/`install/` in CI to cut build
-  times by 60–80%.
+- Prefer compiler caches and dependency/container layers **that have explicit,
+  reproducible invalidation inputs** — `.ccache/`, apt/rosdep, base images. They
+  are not automatically safe either: an apt layer goes stale with the distro,
+  repository state, dependency declarations, and package-index time, so key it
+  on those.
+- **Do not cache `build/`/`install/` by default.** Opt in only with an exact key
+  covering toolchain, ROS distro, dependency resolution, build options, and the
+  complete relevant source tree — and never partially restore them
+  (`restore-keys` falls back to an older prefix match, which is exactly the
+  failure). A partially restored install space keeps artifacts of files no
+  longer in the source, so CI links and tests stale code and reports it green —
+  the same stale-overlay failure that bites on robots
+  (`references/runtime-provenance.md`).
 
 ### 11. Source-first behavior verification
 
@@ -317,18 +367,45 @@ SDK/API maximum. For hardware checks, prefer configure-only lifecycle
 validation with hardware isolation (`references/testing.md` section 4).
 Details: `references/navigation.md` sections 7 and 10.
 
+**A stop command is verified end-to-end, not on a topic.** Zero velocity
+visible on `/cmd_vel` proves a message was published — not that the robot
+stopped. Verify all four links: command ownership, driver translation,
+local submission plus any available remote-acceptance evidence, and
+measured hardware response (`references/safety-estop.md` section 3).
+
+### 13. Verification levels
+
+Say which level a result came from, every time. Each level answers a
+different question, and a claim never inherits the confidence of a level
+it did not reach.
+
+| Level | What ran | What it proves |
+|---|---|---|
+| L0 | Static review | The code/config reads correctly; nothing was executed |
+| L1 | Unit tests | Isolated logic, no ROS graph, no real time |
+| L2 | Build + launch smoke | It compiles, nodes start, plugins/params load |
+| L3 | Runtime, robot disconnected | Graph, QoS, TF and rates on sim or mock hardware |
+| L4 | Hardware powered, no actuation | Real provenance, params, TF and driver state — motors disabled/isolated |
+| L5 | Bench motion / fault injection | Commanded motion and failsafes on a restrained platform, operator present |
+| L6 | Supervised field operation | The behavior in its real duty cycle |
+
+Never write an L0–L2 result in L4+ language. "Tests pass" and "safe to
+drive" may not share a sentence. When a level was skipped, say which one
+and why. Level definitions and required evidence: `references/testing.md`
+section 11.
+
 ## Common anti-patterns
 
 | Anti-pattern | Why it hurts | Fix |
 |---|---|---|
 | Global variables for node state | Breaks composition, untestable | Store state as class members |
-| `spin()` in `main()` for multi-node processes | Starves other nodes | Use `MultiThreadedExecutor` or component composition |
+| `spin(node)` in `main()` for a multi-node process | `spin(node)` creates an executor for **that node only**; other locally created nodes not added to another spinning executor receive no executor-driven callbacks (omission, not starvation) | Add every node to one executor; `MultiThreadedExecutor` only when callbacks must overlap, or use component composition |
 | Hardcoded topic names | Breaks reuse across robots | Use relative names + namespace remapping |
 | `KEEP_ALL` history with no bound | Memory grows unbounded on slow subscribers | Use `KEEP_LAST` with explicit depth |
 | Using `time.sleep()` / `std::this_thread::sleep_for` | Blocks the executor thread | Use `create_wall_timer` or a dedicated thread |
 | Monolithic launch file for everything | Unmanageable past 10 nodes | Compose launch files with `IncludeLaunchDescription` |
 | Skipping `package.xml` dependencies | Builds locally, breaks CI and Docker | Declare every dependency explicitly |
-| Publishing in constructor | Subscribers may not be ready, messages lost | Publish in `on_activate` or after a short timer |
+| Publishing a one-shot VOLATILE message in the constructor and expecting later-matching subscribers to receive it | Subscribers that match afterwards never see it — publishing itself is fine, relying on delivery is not | Publish after discovery/activation when delivery matters, or use compatible `TRANSIENT_LOCAL` durability for state intentionally retained for late joiners (retained samples still require a live publisher and a compatible subscriber QoS) |
 | Ignoring QoS compatibility | Silent communication failure | Match publisher/subscriber QoS or check with `ros2 topic info -v` |
 | Creating timers/subs in callbacks | Resource leak, unpredictable behavior | Create all entities in constructor or `on_configure` |
 | Synchronous service call in callback | Deadlocks the executor thread | Use `async_send_request` with a callback or dedicated thread |
@@ -345,7 +422,7 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 | # | Pitfall | What goes wrong | Correct approach |
 |---|---------|----------------|-----------------|
 | 1 | Using `spin_until_future_complete` inside a callback | Deadlocks the executor — the callback blocks waiting for a response that can never be delivered | Register a response callback and return without waiting; a separate callback group (or reentrant + `MultiThreadedExecutor`) is needed only when a synchronous wait is unavoidable |
-| 2 | Generating Foxy-era API for Jazzy/Kilted | `node_executable` is deprecated, `export_state_interfaces()` signature changed in ros2_control 4.x | Always check the distro feature matrix above before generating code |
+| 2 | Generating Foxy-era API for Jazzy/Kilted | `node_executable` is deprecated, `export_state_interfaces()` signature changed in ros2_control 4.x | Detect the distro from the environment and workspace first (Principle 1) — never default an existing workspace to the newest LTS — then check the feature matrix above |
 | 3 | Omitting QoS in publisher/subscriber creation | Defaults silently mismatch — publisher sends but subscriber receives nothing | Always specify QoS explicitly; use the QoS defaults table in Principle 6 |
 | 4 | Creating a `msg/` directory inside a non-interfaces package | Builds locally but fails in CI — interface packages need `rosidl_generate_interfaces` | Put messages in a dedicated `*_interfaces` package |
 | 5 | Hardcoding `/opt/ros/humble/` paths in launch files | Breaks on any other distro or install prefix | Use `FindPackageShare`, `PathJoinSubstitution`, or environment substitutions |
@@ -358,6 +435,14 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 | 12 | Publishing before subscribers connect (no TRANSIENT_LOCAL) | First N messages lost — map, URDF, or initial config never received | Use `TRANSIENT_LOCAL` durability for latched-style data, or publish in `on_activate` with a startup delay |
 | 13 | Writing Nav2 names from memory (`recoveries_server`/`nav2_recoveries/` on Humble, pre-Galactic `default_bt_xml_filename`) | Parameters silently ignored or plugin loading fails at configure | Humble+ uses `behavior_server`/`nav2_behaviors/` and `default_nav_to_pose_bt_xml`; verify against the installed version (Principle 11) |
 | 14 | Enabling Spin/BackUp recoveries by default on an unvalidated robot | Robot suddenly rotates or reverses in the field — the recovery, not path following, is at fault | Motion recoveries are opt-in after validation; actuation-free recovery first (Principle 12) |
+| 15 | Reading zero Twist on the command topic as "the robot stopped" | The driver may discard a zero command as "no command", or a competing publisher's next command may take effect immediately afterwards — the message was published, the robot never stopped | Verify the whole chain: single arbiter → driver's actual stop call → submission/acceptance evidence → measured hardware response (`references/safety-estop.md` §3) |
+| 16 | Reading the YAML in `src/` and assuming that is what runs | The process loaded an installed copy from some prefix; an older `install/`, a second overlay, or a launch-time override wins silently | Diff source against `$(ros2 pkg prefix <pkg>)/share/...`, then confirm with `ros2 param dump` on the live node (`references/runtime-provenance.md`) |
+| 17 | Guessing array-field semantics from the field name or index | Joint order, covariance layout, and `ranges` indexing are publisher-defined — a guessed index silently reads the wrong joint or axis | Read the message definition *and* the publisher's actual ordering (e.g. `JointState.name`); never index by assumption (`references/message-types.md`) |
+| 18 | Checking that a TF chain connects and stopping there | A connected chain can still be stale, or driven by two broadcasters fighting over one edge — the lookup succeeds and the pose is wrong | Also enumerate the `/tf` publisher endpoints (`ros2 topic info /tf -v`), treat `TF_REPEATED_DATA` as a duplicate-broadcaster clue, and check timestamp freshness (`references/runtime-provenance.md`) |
+| 19 | Reporting a passing test suite as hardware verification | Static and unit results get written in the language of field validation, so nobody knows what was actually tried on the robot | State the verification level with every claim (Principle 13); "tests pass" and "safe to drive" are different levels |
+| 20 | Treating Nav2's low output velocity as a config bug | The command may be correct and simply below the robot's actuation-onset threshold — retuning Nav2 cannot fix a command the hardware ignores | Measure the smallest command that produces real motion first, then set limits from it (`references/navigation.md` §10) |
+| 21 | Putting a deadband inside an open-loop smoother's feedback path | The zeroed output is fed back as the new state, so each tick's ramp increment is erased and the robot never accelerates | Feed back the pre-deadband value and apply the deadband only to the published output (upstream `nav2_velocity_smoother` assigns `last_cmd_` before zeroing) |
+| 22 | Treating node/topic presence as evidence the system is healthy | The CLI node listing can echo a stale daemon cache, and ROS 2 permits duplicate node names — two live processes answer as one | Cross-check with `--no-daemon` (or restart the daemon) and `pgrep -af` against the real processes (`references/runtime-provenance.md`) |
 
 > **Maintenance rule:** When you encounter a new AI failure pattern while using this
 > skill, append it to this table with the next sequential number. The pitfall list

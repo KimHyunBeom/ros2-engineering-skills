@@ -105,7 +105,7 @@ A `SKILL.md`-based knowledge module that gives AI coding agents deep ROS 2 engin
 | Aspect | Typical ROS 2 skill | This project |
 |---|---|---|
 | Depth | Basic QoS + lifecycle intro | DDS vendor tuning, custom executors, intra-process zero-copy, type adapters |
-| Scope | Single SKILL.md file | 23 reference files via progressive disclosure |
+| Scope | Single SKILL.md file | 25 reference files via progressive disclosure |
 | Hardware | Mentioned in passing | ros2_control hardware interface patterns, serial/CAN/EtherCAT, controller chaining |
 | Real-time | Not covered | PREEMPT_RT, realtime_tools, memory allocation, callback group strategies |
 | Simulation | Mentioned in passing | Gazebo version matrix, gz_ros2_control, Isaac Sim, sim-to-real |
@@ -175,7 +175,7 @@ ln -s /path/to/ros2-engineering-skills .claude/skills/ros2-engineering-skills
 ```text
 ros2-engineering-skills/
 ├── SKILL.md                        # Entry point — decision router + core principles
-├── references/                     # 23 reference files (15,000+ lines)
+├── references/                     # 25 reference files (15,000+ lines)
 │   ├── workspace-build.md          # colcon, ament_cmake, package.xml, overlays
 │   ├── nodes-executors.md          # rclcpp/rclpy nodes, executors, callback groups
 │   ├── communication.md            # Topics, services, actions, QoS, type adapters, DDS tuning
@@ -195,6 +195,8 @@ ros2-engineering-skills/
 │   ├── multi-robot.md              # Fleet management, Open-RMF, DDS discovery at scale
 │   ├── testing.md                  # gtest, pytest, launch_testing, industrial_ci, CI/CD
 │   ├── debugging.md                # ros2 doctor, tracing, Foxglove, MCAP, rosbag2
+│   ├── runtime-provenance.md       # Overlay/install provenance, live publishers, TF authority, stale daemon
+│   ├── system-diagnostics.md       # Cross-layer fault chains: link/bridge/driver failures surfacing as ROS symptoms
 │   ├── deployment.md               # Docker, cross-compile, fleet management, Zenoh routing
 │   ├── system-bringup.md           # udev rules, systemd boot ordering, watchdogs, health checks
 │   ├── message-types.md            # Message conventions, units, covariance, diagnostics
@@ -226,7 +228,7 @@ ros2-engineering-skills/
 
 ## Current status
 
-23 reference files, 15,000+ lines of guidance, 7 utility/harness scripts (4 user-facing + 2 Skills 2.0 hooks + 1 eval harness). The scripts and harness are covered by automated tests and were exercised on live ROS 2 Jazzy environments.
+25 reference files, 15,000+ lines of guidance, 7 utility/harness scripts (4 user-facing + 2 Skills 2.0 hooks + 1 eval harness). The scripts and harness are covered by automated tests and were exercised on live ROS 2 Jazzy environments.
 
 **What the automated checks do — and do not — verify:**
 

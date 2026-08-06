@@ -538,6 +538,18 @@ This separates "Nav2 commanded this rotation" from "a downstream stage
 transformed the rotation" — two failures with identical symptoms and
 different fixes.
 
+Two follow-ups this trace does not cover on its own:
+
+- **Command topics with more than one publisher.** `ros2 topic info -v` reports
+  the count. Without an arbiter the subscriber can process commands from every
+  compatible publisher, and there is no defined command priority on the topic
+  itself. The end-to-end verification of a command actually reaching (and
+  stopping) the hardware is in `references/safety-estop.md` §3.
+- **Which config each stage actually loaded.** A smoother or collision monitor
+  reading an older installed YAML explains a "wrong" transformation that no
+  amount of parameter tuning fixes — audit with
+  `references/runtime-provenance.md`.
+
 ### Source-first verification
 
 Distro labels are not enough when exact behavior matters. Before asserting
@@ -824,6 +836,24 @@ each one instead of copying the spec sheet:
 
 Set Nav2's `max_vel_x` / `max_vel_theta` from (3), never from (1). A ±4 rad/s
 API range does not mean the robot is controllable — or safe — at 4 rad/s.
+
+**Row 2 is also a diagnosis, not just a limit.** "Nav2 outputs a small velocity
+and the robot does not move" is usually read as a configuration bug, and
+retuning follows. But a command below the actuation-onset threshold is a
+*correct* command the hardware ignores — no Nav2 parameter can fix it. Measure
+the threshold before tuning: with the robot restrained and an operator present
+(L5, `references/testing.md` §11), publish increasing commands and record the
+smallest one that produces measured motion in encoder or IMU feedback. If the
+controller's normal output near the goal sits below that value, the fix is a
+minimum-command floor or a different approach strategy, not smaller tolerances.
+
+**Deadbands belong on the output, never in the feedback path.** A smoother that
+zeroes small commands and then feeds the *zeroed* value back as its own state
+erases every tick's ramp increment: each cycle starts from zero, the ramp never
+accumulates past the deadband, and the robot never accelerates. Upstream
+`nav2_velocity_smoother` gets this right — it assigns `last_cmd_` from the
+rate-limited value *before* applying `deadband_velocities_` — so if you write
+your own smoother or wrap one in open-loop mode, keep that ordering.
 
 ### Key parameters to tune first
 

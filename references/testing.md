@@ -12,6 +12,7 @@
 8. CI/CD pipeline design
 9. Rosbag-based regression testing
 10. Common failures and fixes
+11. Verification levels
 
 ---
 
@@ -670,7 +671,21 @@ Run Gazebo headless in CI for physics-based integration tests:
 
 ### Key CI practices
 
-- **Cache `/opt/ros/`, `build/`, `install/`, `.ccache/`** — reduces build from 15 min to 3 min
+- **Prefer compiler caches and dependency/container layers with explicit
+  invalidation inputs.** `.ccache/`, base images, and apt/rosdep layers are
+  usually safer than caching a colcon install space, but they are not
+  automatically fresh. Pin image digests or tags as appropriate, run
+  `apt-get update` with the install step, and invalidate the layer when the
+  distro or dependency declarations change.
+- **Cache `build/`/`install/` only under strict invalidation.** Key on the
+  toolchain, the resolved dependency versions, *and* a hash of the full source
+  tree, with **no `restore-keys`**. colcon does not remove artifacts belonging
+  to deleted sources, so a partially restored install space links and tests
+  code that is no longer in the repository and reports it green. That is the
+  same stale-overlay failure that produces "I fixed it but the robot still runs
+  the old behavior" (`references/runtime-provenance.md`, "Source tree vs installed copy").
+  When in doubt,
+  cache ccache only and rebuild — ccache already recovers most of the time
 - **Use `colcon test-result --verbose`** — fail the CI if any test fails
 - **Run linters:** `ament_lint_auto` checks copyright, style, naming
 - **Test in container:** Use official `ros:jazzy` image for reproducibility
@@ -749,8 +764,46 @@ class TestPerceptionRegression(unittest.TestCase):
 | `colcon test-result` shows "no tests" | Test not registered in CMakeLists.txt | Add `ament_add_gtest` or `add_launch_test` |
 | Python test can't import package | Package not installed / not on PYTHONPATH | `source install/setup.bash` before running tests |
 | Mock hardware behaves differently than real | GenericSystem has perfect response | Test with realistic delays and noise in mock hardware |
-| CI build takes too long | No caching, full rebuild every time | Cache `build/`, `install/`, `.ccache/`, rosdep install |
+| CI build takes too long | No caching, full rebuild every time | Cache `.ccache/` and the rosdep/apt layer; add `build/`/`install/` only with strict invalidation (section 8) |
+| CI green, but it tests code that was deleted | Restored `build/`/`install/` cache still holds artifacts of removed sources | Drop the partial-restore keys; key the cache on toolchain + deps + source hash |
+
+## 11. Verification levels
+
+Everything above produces evidence at some level of confidence, and the levels
+are not interchangeable. `SKILL.md` Principle 13 defines the ladder; this
+section is the working detail — what each level proves, what it explicitly does
+not, and what to cite as evidence.
+
+State the level with every claim. The failure this prevents is not a wrong
+result; it is a *correct* result described in the language of a level it never
+reached, which is how "the tests pass" becomes "it is safe to drive."
+
+| Level | What ran | Proves | Does NOT prove | Evidence to cite |
+|---|---|---|---|---|
+| **L0** Static review | Reading code, config, and vendor docs | Internal consistency; that a named plugin/parameter exists in the installed version (Principle 11) | Anything about execution | File and line, installed package version |
+| **L1** Unit tests | gtest/pytest on isolated logic (sections 1–2) | Algorithms, boundary conditions, error paths | Integration, timing, QoS, the ROS graph | Test names, `colcon test-result` output |
+| **L2** Build + launch smoke | colcon build; nodes start; configure-only validation (section 4) | It compiles; plugins resolve; YAML parses; params load | That the system does anything useful once active | Build log, pluginlib "Created ..." lines |
+| **L3** Runtime, robot disconnected | Full graph on sim or mock hardware (section 5, `references/simulation.md`) | Topic/QoS matching, TF chain, rates, node interaction | Real timing, real sensor noise, real actuator response | `ros2 topic info -v`, `hz` output, bag of the run |
+| **L4** Hardware powered, no actuation | Real robot, motors disabled or mechanically isolated | Provenance, real parameters, real sensor and driver state, TF from real hardware | Any motion behavior | Provenance checklist (`references/runtime-provenance.md`), driver diagnostics |
+| **L5** Bench motion / fault injection | Commanded motion and failsafe tests on a restrained platform, operator present | Motion response, stop-path behavior under injected faults | Behavior over a full duty cycle, in the real environment | Stop-path acceptance criteria (`references/safety-estop.md` §3), with the physical safety conditions in §6; measured stopping distance |
+| **L6** Supervised field operation | The real task, supervised, with recording on | Behavior in its actual environment and duty cycle | That untested edge cases are handled | Bag recordings, incident log, operator sign-off |
+
+Rules for using the ladder:
+
+- **Report the level reached, not the level attempted.** If configure-only
+  validation passed but nothing was activated, that is L2.
+- **A level does not inherit from the one below.** Passing L1 says nothing about
+  L3; passing L3 in simulation says nothing about L4 provenance.
+- **Name skipped levels.** "L1 and L2 pass; L4+ not run — no hardware access" is
+  a complete report. Silence about hardware reads as hardware verification.
+- **L5 and L6 have preconditions, not just procedures.** Operator approval, a
+  physically restrained platform, and a hardware e-stop in hand. They are never
+  unattended CI steps and never AI agent actions on hardware
+  (`references/hardware-interface.md`, `references/safety-estop.md` §6).
+- **Safety claims cite their weakest link.** A stop path verified at L3 is a
+  stop path verified in simulation, however many tests it passed
+  (`references/safety-estop.md` §3).
 
 ---
 
-**See also:** `references/simulation.md` for headless simulation testing in CI, `references/launch-system.md` for launch_testing framework patterns, `references/workspace-build.md` for colcon test configuration and CI/CD setup.
+**See also:** `references/simulation.md` for headless simulation testing in CI, `references/launch-system.md` for launch_testing framework patterns, `references/workspace-build.md` for colcon test configuration and CI/CD setup, `references/runtime-provenance.md` for verifying what a running system actually loaded.

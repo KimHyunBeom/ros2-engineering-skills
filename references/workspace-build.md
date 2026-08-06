@@ -373,6 +373,14 @@ ROS 2 workspaces form a chain of overlays:
   so Python edits take effect without rebuilding
 - C++ changes always require a rebuild
 
+**Overlay order is resolution order.** `AMENT_PREFIX_PATH` decides which copy of
+a package a process actually loads, and the first prefix containing it wins.
+A forgotten workspace earlier in that list shadows the one you are editing, and
+`install/` keeps artifacts of sources you have deleted — colcon does not remove
+them. When a rebuild appears to have no effect, audit the running process
+instead of rebuilding again: `references/runtime-provenance.md` ("What the
+running process actually inherited", "Source tree vs installed copy").
+
 **Multiple workspace pattern for large teams:**
 
 ```bash
@@ -521,6 +529,7 @@ vcs pull src
 | "Package not found" after build | Forgot to source `install/setup.bash` | Source after every build, or use `direnv` |
 | Circular dependency error | Package A depends on B and B depends on A | Extract shared interfaces into a third package |
 | "Multiple packages with name X" | Duplicate package in overlay and underlay | Remove the underlay version or use `--packages-select` |
+| Rebuild has no effect on the running node | Another overlay shadows the package, or `install/` still holds a deleted source's artifacts | Audit the process's `AMENT_PREFIX_PATH` and installed files (`references/runtime-provenance.md`); delete `build/`/`install/`/`log/` for that package and rebuild |
 | Link error: undefined reference | Library not listed in `target_link_libraries` | Add library to CMake target linking |
 
 ---
