@@ -521,6 +521,135 @@ class TestFaultInjectionSafetyConsistency:
             )
 
 
+RUNTIME_PROVENANCE_MD = os.path.join(ROOT, 'references',
+                                     'runtime-provenance.md')
+
+
+def _flat(text):
+    """Collapse whitespace so prose assertions survive hard wrapping.
+
+    Reference files wrap at ~76 columns, so any asserted phrase longer than
+    a few words straddles a newline. Without this, a test fails when a
+    sentence is re-wrapped rather than when its meaning changes.
+    """
+    return ' '.join(text.split())
+
+
+def _skill_row(needle):
+    """The single SKILL.md table row containing `needle`.
+
+    Row-scoped rather than whole-file: a global ban on a corrected phrase
+    would also outlaw the migration note or test docstring that explains
+    why the phrase was wrong.
+    """
+    rows = [line for line in _lines(SKILL_MD)
+            if line.startswith('|') and needle in line]
+    assert rows, f'no SKILL.md table row containing {needle!r}'
+    assert len(rows) == 1, (
+        f'{needle!r} matches {len(rows)} SKILL.md rows; tighten the needle')
+    return rows[0]
+
+
+class TestTfAuthorityLimitation:
+    """ROS 2 has no per-transform publisher identity: TransformListener
+    stores the literal 'Authority undetectable', so view_frames/tf2_monitor
+    cannot name a broadcaster. The replacement must not overshoot either:
+    `ros2 topic info /tf -v` lists publisher endpoints, which is not the
+    same as attributing an individual parent-child edge to one of them."""
+
+    def _tf_section(self):
+        return _md_section(RUNTIME_PROVENANCE_MD, 'TF provenance')
+
+    def test_provenance_states_the_limitation(self):
+        section = self._tf_section()
+        assert 'Authority undetectable' in section
+        assert 'ros2 topic info /tf -v' in section, (
+            'runtime-provenance.md must give the working alternative')
+
+    def test_topic_info_is_not_sold_as_edge_attribution(self):
+        section = self._tf_section()
+        assert 'does not by itself attribute' in _flat(section), (
+            'the /tf endpoint listing must not be presented as per-edge '
+            'broadcaster attribution')
+
+    def test_repeated_data_is_a_clue_not_proof(self):
+        section = self._tf_section()
+        assert 'TF_REPEATED_DATA' in section
+        assert 'clue, not proof' in _flat(section), (
+            'TF_REPEATED_DATA has other causes (identical-stamp resends, bag '
+            'replay) and must not be presented as proof of duplicates')
+
+    def test_freshness_is_checked_separately(self):
+        assert 'tf2_monitor' in self._tf_section()
+
+
+class TestProvenanceProofBoundaries:
+    """`ros2 pkg prefix` and a fresh `python3 -c` import describe the shell
+    that runs them, not an already-running node. Pinned error: both were
+    filed under "which files did this process load", which is the exact
+    overclaim this file exists to prevent."""
+
+    def test_shell_and_process_sections_are_separate(self):
+        content = _read(RUNTIME_PROVENANCE_MD)
+        for heading in ('## 1. What the current shell resolves',
+                        '## 2. What the running process actually inherited',
+                        '## 3. Comparing the two'):
+            assert heading in content, f'missing section: {heading!r}'
+
+    def test_shell_section_states_what_it_cannot_prove(self):
+        section = _md_section(RUNTIME_PROVENANCE_MD,
+                              'What the current shell resolves')
+        assert '**Does not prove:**' in section
+        assert 'already-running process' in _flat(section)
+
+    def test_process_section_flags_interpreter_and_namespace_limits(self):
+        section = _md_section(RUNTIME_PROVENANCE_MD,
+                              'What the running process actually inherited')
+        assert 'interpreter for Python nodes' in _flat(section), (
+            '/proc/<pid>/exe resolves to the interpreter, not the script')
+        assert 'not 1:1' in section, (
+            'node names and PIDs are not 1:1 — component containers and '
+            'duplicate node names')
+        assert 'namespace-scoped' in section, (
+            '/proc inspection is Linux-only and PID-namespace-scoped')
+
+    def test_checklist_carries_the_whole_file_limits(self):
+        section = _md_section(RUNTIME_PROVENANCE_MD, 'Provenance checklist')
+        for needle in ('not 1:1', 'PID-namespace-scoped', 'Point-in-time'):
+            assert needle in section, (
+                f'provenance checklist missing global limit: {needle!r}')
+
+
+SYSTEM_DIAGNOSTICS_MD = os.path.join(ROOT, 'references',
+                                     'system-diagnostics.md')
+
+
+class TestBagSplittingIsNotRetention:
+    """`--max-bag-duration` starts a new file every N seconds and keeps
+    every previous one; it does not delete anything or bound disk use.
+    Pinned error: it was presented as a "rolling bag", which on a robot
+    ends as a full disk rather than a bounded recording."""
+
+    def test_splitting_is_distinguished_from_retention(self):
+        content = _flat(_read(SYSTEM_DIAGNOSTICS_MD))
+        assert 'does not bound total disk use' in content
+        assert 'Do not assume splitting is retention' in content
+
+    def test_retention_option_is_version_checked_not_asserted(self):
+        """Circular-retention flags arrived later in rosbag2's history, so
+        the doc must send readers to --help on the installed version rather
+        than promising a flag exists."""
+        content = _flat(_read(SYSTEM_DIAGNOSTICS_MD))
+        assert 'ros2 bag record --help' in content, (
+            'retention options must be checked against the installed '
+            'version (Principle 11), not asserted per distro')
+
+    def test_failure_table_no_longer_calls_it_a_rolling_bag(self):
+        section = _flat(_md_section(SYSTEM_DIAGNOSTICS_MD,
+                                    'Common failures and fixes'))
+        assert 'Rolling bag of the chain' not in section
+
+
 REALTIME_MD = os.path.join(ROOT, 'references', 'realtime.md')
 
 

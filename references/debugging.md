@@ -144,6 +144,12 @@ If the rate is significantly lower than expected (e.g., 30 Hz instead of 500 Hz)
 
 If a node shows no publishers/subscribers when it should have them, the node is not spinning or has a namespace mismatch.
 
+> **Introspection answers "what", not "which copy".** These commands describe
+> the graph as the CLI daemon sees it. When the question is *which install
+> prefix a node loaded, which YAML it actually read, who owns a TF edge, or
+> whether a listed node is backed by one process or two*, use the audit
+> procedure in `references/runtime-provenance.md`.
+
 ### Topic introspection
 
 ```bash
@@ -764,4 +770,4 @@ ros2 lifecycle set /node_name activate
 
 ---
 
-**See also:** `references/tf2-urdf.md` for TF tree debugging and frame diagnostics, `references/communication.md` for QoS mismatch diagnosis and topic introspection.
+**See also:** `references/tf2-urdf.md` for TF tree debugging and frame diagnostics, `references/communication.md` for QoS mismatch diagnosis and topic introspection, `references/runtime-provenance.md` for auditing what a running system actually loaded, `references/system-diagnostics.md` for failures that originate outside the ROS graph.
