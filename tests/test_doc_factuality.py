@@ -596,6 +596,205 @@ class TestConstructorPublishQualified:
         assert 'compatible' in row
 
 
+class TestCiCacheInvalidation:
+    """build/ and install/ caches can serve artifacts whose sources were
+    deleted, so CI links and tests code that no longer exists. Pinned
+    errors: both SKILL.md Principle 10 and testing.md's CI section
+    recommended caching build/ and install/ with no invalidation
+    conditions; a first correction then called ccache and apt layers safe
+    'unconditionally', which they are not.
+
+    Scoped to the Principle 10 block and the named CI section — a global
+    search would pass on an unrelated mention elsewhere in the file."""
+
+    def _principle_10_block(self):
+        lines = _lines(SKILL_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith('### ') and 'Build and CI hygiene'
+                     in line)
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith('### ')), len(lines))
+        return '\n'.join(lines[start:end])
+
+    def test_principle_10_conditions_the_build_install_cache(self):
+        block = self._principle_10_block()
+        assert 'Do not cache `build/`/`install/` by default' in _flat(block)
+        assert 'restore-keys' in block, (
+            'Principle 10 must warn against partial cache restores')
+        for needle in ('toolchain', 'dependency resolution', 'source tree'):
+            assert needle in block, (
+                f'Principle 10 cache key missing input: {needle!r}')
+
+    def test_principle_10_does_not_call_any_cache_unconditionally_safe(self):
+        block = self._principle_10_block()
+        assert 'freely' not in block and 'unconditionally' not in block, (
+            'no cache layer is safe unconditionally — apt/rosdep layers go '
+            'stale with distro and package-index state')
+
+    def test_testing_md_conditions_the_build_install_cache(self):
+        section = _md_section(TESTING_MD, 'Key CI practices')
+        assert 'restore-keys' in section
+        assert re.search(r'ccache', section)
+        assert 'no longer in the repository' in _flat(section), (
+            'testing.md must state the stale-artifact failure mode')
+
+    def test_testing_md_does_not_call_any_cache_unconditionally_safe(self):
+        """Same rule as Principle 10, pinned on the reference file too: an
+        apt/rosdep or base-image layer also goes stale with the distro,
+        package index, dependency declarations, and moving tags."""
+        section = _flat(_md_section(TESTING_MD, 'Key CI practices'))
+        for absolute in ('freely', 'cannot serve', 'unconditionally'):
+            assert absolute not in section, (
+                f'testing.md cache guidance is absolute again: '
+                f'{absolute!r} — no cache layer is safe without explicit '
+                f'invalidation inputs')
+        assert 'not automatically fresh' in section, (
+            'testing.md must say dependency layers are not automatically '
+            'fresh')
+
+
+class TestVerificationLevels:
+    """"Tests pass" and "safe to drive" are different levels of evidence.
+    The ladder must stay in the always-loaded file (so it applies to every
+    report) with the detail in testing.md. Order matters as much as
+    presence: a shuffled or duplicated ladder stops being a ladder."""
+
+    def _skill_ladder_rows(self):
+        section = _md_section(SKILL_MD, 'Verification levels')
+        return re.findall(r'^\| (L\d) \|', section, re.M)
+
+    def test_skill_md_ladder_is_ordered_and_unique(self):
+        rows = self._skill_ladder_rows()
+        expected = [f'L{i}' for i in range(7)]
+        assert rows == expected, (
+            f'SKILL.md verification ladder must be L0..L6 in order, got '
+            f'{rows}')
+
+    def test_skill_md_forbids_level_inflation(self):
+        section = _md_section(SKILL_MD, 'Verification levels')
+        assert 'may not share a sentence' in section, (
+            'SKILL.md must forbid reporting static results as hardware '
+            'verification')
+
+    def test_testing_md_expands_every_level_in_order(self):
+        section = _md_section(TESTING_MD, 'Verification levels')
+        levels = re.findall(r'\*\*(L\d)\*\*', section)
+        assert levels[:7] == [f'L{i}' for i in range(7)], (
+            f'testing.md must expand L0..L6 in order, got {levels[:7]}')
+        assert 'Does NOT prove' in section, (
+            'each level must state what it does not prove')
+
+
+class TestEndToEndStopVerification:
+    """A zero command on a topic is not a stopped robot: the driver may
+    discard it, the vendor call may fail, or a competing publisher may
+    overwrite it. All four links stay documented together, and the hardware
+    link carries measurable criteria — "the feedback got smaller" passes an
+    unquantified check while the robot is still moving."""
+
+    def _section(self):
+        """Prose section plus its criteria subsection.
+
+        `_md_section` stops at the next heading of any level, so the
+        'Acceptance criteria' subsection would otherwise fall outside the
+        block that documents the links it quantifies.
+        """
+        return '\n'.join((
+            _md_section(SAFETY_ESTOP_MD,
+                        'Zero on a topic is not a stopped robot'),
+            self._acceptance_criteria(),
+        ))
+
+    def test_all_four_links_documented(self):
+        section = _flat(self._section())
+        for needle in ('Command ownership matches the declared architecture',
+                       'single-arbiter invariant',
+                       'explicit stop', 'return code', 'encoder'):
+            assert needle in section, (
+                f'stop-verification section missing link evidence: '
+                f'{needle!r}')
+
+    def test_publisher_count_is_tied_to_declared_architecture(self):
+        """Pinned overreach: "publisher count must be exactly 1" stated as a
+        universal law. Redundant and hot-standby designs exist; the rule is
+        that observation matches the *declared* ownership architecture, with
+        the single-arbiter invariant called out as this guide's default."""
+        section = _flat(self._section())
+        assert 'match the command-ownership architecture you declared' in (
+            section)
+        assert ('more than one active driver-facing command publisher is a '
+                'failure' in section)
+
+    def _acceptance_criteria(self):
+        """The criteria live in their own subsection, so read that — and
+        confirm the heading is unique first, since `_md_section` matches on
+        a substring and would silently pick the wrong block if a second
+        'Acceptance criteria' heading were ever added."""
+        headings = [line for line in _lines(SAFETY_ESTOP_MD)
+                    if re.match(r'^#+ Acceptance criteria\s*$', line)]
+        assert len(headings) == 1, (
+            f'expected exactly one "Acceptance criteria" heading in '
+            f'safety-estop.md, found {len(headings)}')
+        return _md_section(SAFETY_ESTOP_MD, 'Acceptance criteria')
+
+    def test_hardware_link_has_measurable_criteria(self):
+        section = self._acceptance_criteria()
+        for symbol in ('t0', 'T_send', 'T_ack', 'epsilon_stop', 'T_stop',
+                       'T_hold'):
+            assert symbol in section, (
+                f'acceptance criteria missing {symbol!r} — without times and '
+                f'tolerances "verified" is not reproducible')
+        assert 'measured per' in _flat(section).lower(), (
+            'the thresholds must be measured and recorded per platform')
+
+    def test_local_return_is_not_remote_acceptance(self):
+        """A successful SDK return commonly means "enqueued locally" or
+        "socket write succeeded", not that the device received or applied
+        the command. Pinned overclaim: submission and acceptance evidence
+        were listed as interchangeable proof of transport success."""
+        section = _flat(self._acceptance_criteria())
+        assert 'submission evidence only' in section, (
+            'a successful local return must be labelled submission evidence')
+        for needle in ('acknowledgement', 'echoed sequence number'):
+            assert needle in section, (
+                f'remote-acceptance evidence missing: {needle!r}')
+        assert 'no acknowledgement' in section, (
+            'protocols without an acknowledgement must be handled — state '
+            'that remote acceptance was not directly verified')
+        assert 'must not be relabeled' in section, (
+            'downstream hardware response must not be relabeled as a '
+            'protocol acknowledgement')
+
+    def test_sros2_claim_separates_observe_constrain_verify(self):
+        section = self._section()
+        for needle in ('observe', 'constrain', 'verify that'):
+            assert needle in section.lower(), (
+                f'stop section must distinguish {needle!r} — an unenforced '
+                f'policy looks identical to an enforced one')
+        assert 'point-in-time' in section, (
+            'publisher-count observation must be marked point-in-time')
+
+    def test_skill_md_pitfall_covers_the_topic_level_illusion(self):
+        row = _skill_row('the robot stopped')
+        assert 'safety-estop' in row
+
+    def test_skill_md_summary_matches_the_detailed_chain(self):
+        """The always-loaded summary must not re-merge what the reference
+        file separates. Pinned error: Principle 12 and pitfall 15 said the
+        vendor "call returns success" / "call succeeded", equating a local
+        return with remote acceptance in exactly the sentence most readers
+        will see."""
+        content = _flat(_read(SKILL_MD))
+        for merged in ('that call returns success', 'call succeeded'):
+            assert merged not in content, (
+                f'SKILL.md still equates a local return with acceptance: '
+                f'{merged!r}')
+        assert 'local submission plus any available remote-acceptance' in (
+            content), 'Principle 12 must carry the split summary'
+        assert 'submission/acceptance evidence' in _skill_row(
+            'the robot stopped')
+
+
 class TestTfAuthorityLimitation:
     """ROS 2 has no per-transform publisher identity: TransformListener
     stores the literal 'Authority undetectable', so view_frames/tf2_monitor

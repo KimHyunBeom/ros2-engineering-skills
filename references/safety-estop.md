@@ -215,6 +215,118 @@ ros2 topic info /cmd_vel -v
 On a secured system, make the bypass impossible instead of just audited: only the mux's
 enclave gets publish permission on `/cmd_vel` (Section 4).
 
+### Zero on a topic is not a stopped robot
+
+`ros2 topic echo /cmd_vel` showing zeros proves one thing: a message was
+published. It is not evidence that the robot stopped, and treating it as such is
+how a stop path passes review and fails in the field. Four links sit between the
+message and a stationary machine, and each one has to be verified on its own.
+
+**1. Command ownership matches the declared architecture.** With two publishers
+there is no defined command priority. Without an arbiter the subscriber can
+process commands from every compatible publisher, and which one takes effect
+depends on message and callback processing timing — so a one-shot zero is
+routinely superseded by a planner republishing at 20 Hz. The
+observed active publisher set must match the command-ownership architecture you
+declared — normally exactly one authorized arbiter on the driver-facing command
+topic. **Under the single-arbiter invariant this guide recommends, more than one
+active driver-facing command publisher is a failure.** (Redundant or
+hot-standby designs exist; they need their own written ownership rule, not the
+absence of one.) Verify the count against that rule, do not assume it:
+
+```bash
+ros2 topic info /cmd_vel -v     # single-arbiter design: exactly 1 (the mux)
+```
+
+Three distinct activities, easy to collapse into one and wrong when you do:
+**observe** current publisher ownership with `ros2 topic info -v`; **constrain**
+unauthorized publishers with an enabled SROS2 policy (Section 4); **verify that
+enforcement separately** at the appropriate safety level — a policy that is not
+actually being enforced looks identical to one that is.
+
+The observation is also **point-in-time**. A publisher that appears for 200 ms
+during a reconnect or a node restart will not show up in a single check; where
+contention is intermittent, sample repeatedly or monitor graph events.
+`references/runtime-provenance.md` ("Who actually publishes this topic?") covers
+the audit when the count is wrong and the culprit is not obvious.
+
+**2. The driver translates zero into the vendor's actual stop.** A zero Twist is
+a *value*, and some vendor bridges do not treat it as a command at all — they
+forward only non-zero motion and expect an explicit stop, idle, or damping call
+for "hold still". A driver written against such an SDK silently drops the most
+important message in the system. Read the driver's command path (or the vendor
+API docs) and confirm which call a zero Twist produces; if the SDK has a
+dedicated stop primitive, the driver must invoke it rather than sending zeros.
+
+**3. The command was submitted, and — separately — accepted.** These are two
+strengths of evidence and collapsing them is the most common overclaim here. A
+successful SDK return usually means the command was enqueued locally or the
+socket write succeeded; it says nothing about the device receiving or applying
+it. Remote acceptance needs remote evidence: a protocol acknowledgement, a
+device-side status transition, an echoed sequence number. Log a failure at ERROR
+and surface it on `/diagnostics` — a stop that failed to transmit must never
+look like a stop that worked.
+
+**4. The hardware measurably responded.** Confirm from feedback the command path
+does not produce: wheel/joint velocity from encoders, motor current, IMU, or
+direct observation on a restrained platform. This is the only link that
+distinguishes "we asked it to stop" from "it stopped".
+
+#### Acceptance criteria
+
+"Each link was checked" means different things to different engineers, and the
+loosest reading passes a broken stop path — "the feedback value got smaller" is
+not a stop. Write the criteria down with times and tolerances. Let `t0` be the
+moment the arbiter issues stop:
+
+```text
+1. Command ownership
+   - The observed active publisher set on the driver-facing command topic
+     matches the declared ownership architecture; under the single-arbiter
+     invariant, exactly one authorized publisher endpoint.
+
+2. Driver translation
+   - The driver invokes the documented stop/idle vendor operation, or sends
+     the vendor command equivalent, within T_driver of t0.
+
+3. Transport submission and device acceptance
+   - The driver reports successful local submission within T_send.
+     A successful enqueue/send return is submission evidence only.
+   - Remote evidence — vendor acknowledgement, device-side status
+     transition, echoed sequence number, or equivalent — appears within
+     T_ack of t0.
+
+4. Hardware response
+   - Absolute wheel/joint velocity falls below epsilon_stop within T_stop.
+   - It remains below epsilon_stop for T_hold.
+   - No unexpected current/torque or physical movement is observed.
+```
+
+**When the protocol exposes no acknowledgement**, state that remote acceptance
+was not directly verified. A subsequent device-side status change or hardware
+response is *downstream* evidence that the command took effect by some path —
+it must not be relabeled as a protocol acknowledgement. Knowing the robot
+stopped is not knowing the stop command was received.
+
+`epsilon_stop`, `T_driver`, `T_send`, `T_ack`, `T_stop`, and `T_hold` are
+**measured per platform and recorded** — derived from the drivetrain's braking
+behavior, the vendor's documented command latency, and the sensor noise floor (a
+threshold below your encoder's resolution is not a criterion). Publish them with
+the stop-path test results so a later run can be compared against the same bar.
+
+| Link | Evidence | Level (`SKILL.md` Principle 13) |
+|---|---|---|
+| Command ownership | `ros2 topic info -v` publisher set vs declared architecture, SROS2 policy, enforcement test | L3 |
+| Driver translation | driver source / vendor API path taken by a zero command | L0 + L4 |
+| Transport submission | SDK return code within `T_send` — local acceptance only | L4 |
+| Device acceptance | vendor ack / device status transition / echoed sequence within `T_ack`, or an explicit "not directly verified" | L4 |
+| Hardware response | encoder/current/IMU feedback vs `epsilon_stop`/`T_stop`/`T_hold` | L5 |
+
+Only the full chain is a verified stop. Reporting link 1 as if it were link 4 is
+pitfall 15 in `SKILL.md`. Link 4 requires commanded motion on a restrained
+platform with an operator present — the conditions in Section 6 apply in full,
+and it is never an unattended CI step or an AI agent action.
+
 ### Stopping through ros2_control
 
 Zero velocity through the mux handles kinematic stops. For a stronger protective stop,
@@ -490,8 +602,9 @@ commissioning test.
 |---|---|---|
 | Robot keeps moving after safety node crashes | Stop is a "send true to stop" message — fail-dangerous | Heartbeat permit + DEADLINE event; silence engages the stop (Section 2) |
 | E-stop subscriber never receives the permit | DEADLINE RxO mismatch — publisher offers no (or a longer) deadline | Offer deadline ≤ requested on the publisher; check `ros2 topic info -v` |
-| Planner "wins" against the e-stop's zero command | Both publish the same topic; last writer wins at 20 Hz | Arbitrate through twist_mux; e-stop is a lock at priority 255 (Section 3) |
+| Planner "wins" against the e-stop's zero command | Both publish the same topic; the subscriber can process commands from both, with no defined priority, so periodic planner commands can supersede a one-shot zero depending on processing timing | Arbitrate through twist_mux; e-stop is a lock at priority 255 (Section 3) |
 | Node publishes `/cmd_vel` directly, bypassing the mux | Producers not remapped; nothing enforces the mux as sole writer | Remap all producers to mux inputs; SROS2: only the mux enclave may publish `/cmd_vel` |
+| Zero command visible on the topic, robot keeps moving | The driver discarded the zero as "no command", the vendor call failed, or a competing publisher overwrote it | Verify all four links — command ownership, driver translation, submission plus remote-acceptance evidence, measured hardware response (Section 3) |
 | Stop clears itself when the flaky link recovers | Stop state derived directly from the live condition | Latch the stop; clear only via reset service that re-checks the condition (Section 5) |
 | Any node can publish the permit topic | No access control, or `ROS_SECURITY_STRATEGY=Permissive` | Enforce mode + default-deny governance + supervisor-only publish grant (Section 4) |
 | Spoof test "passes" (spoof succeeds) in the lab | Nodes launched without enclaves fall back to unsecured participants | Launch every node with its enclave (`security.md` §9); make the spoof-must-fail check part of bringup |
