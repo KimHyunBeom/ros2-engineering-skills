@@ -550,6 +550,52 @@ def _skill_row(needle):
     return rows[0]
 
 
+class TestExecutorAntiPatternWording:
+    """`spin(node)` creates an executor for that node only; other locally
+    created nodes not added to another spinning executor get no
+    executor-driven callbacks. Pinned errors: the row called this 'Starves
+    other nodes' (a scheduling problem, sending readers to
+    MultiThreadedExecutor as if concurrency were missing), and the first
+    correction overshot to 'never spin at all', which is false for a node
+    already added to another executor or spun on its own thread."""
+
+    NEEDLE = 'in `main()` for a multi-node process'
+
+    def test_row_does_not_claim_starvation(self):
+        assert 'Starves other nodes' not in _skill_row(self.NEEDLE)
+
+    def test_row_scopes_the_claim_to_unadded_nodes(self):
+        row = _skill_row(self.NEEDLE)
+        assert 'that node only' in row
+        assert 'not added to another spinning executor' in _flat(row), (
+            'the row must not claim other nodes never spin unconditionally')
+        assert 'never spin at all' not in row
+
+    def test_row_prescribes_one_executor(self):
+        assert 'one executor' in _skill_row(self.NEEDLE)
+
+
+class TestConstructorPublishQualified:
+    """Publishing in a constructor is correct for TRANSIENT_LOCAL state
+    intentionally retained for late joiners. Pinned overcorrection: a
+    blanket 'Publishing in constructor' anti-pattern that forbade the
+    pattern instead of the assumption behind it. The retained-sample
+    precondition (live publisher, compatible subscriber QoS) must stay
+    stated, so the exception is not read as a guarantee."""
+
+    NEEDLE = 'one-shot VOLATILE message in the constructor'
+
+    def test_row_targets_the_delivery_assumption(self):
+        row = _skill_row(self.NEEDLE)
+        assert 'VOLATILE' in row
+        assert 'TRANSIENT_LOCAL' in row
+
+    def test_row_keeps_the_retained_sample_precondition(self):
+        row = _skill_row(self.NEEDLE)
+        assert 'live publisher' in row
+        assert 'compatible' in row
+
+
 class TestTfAuthorityLimitation:
     """ROS 2 has no per-transform publisher identity: TransformListener
     stores the literal 'Authority undetectable', so view_frames/tf2_monitor
@@ -648,6 +694,137 @@ class TestBagSplittingIsNotRetention:
         section = _flat(_md_section(SYSTEM_DIAGNOSTICS_MD,
                                     'Common failures and fixes'))
         assert 'Rolling bag of the chain' not in section
+
+
+class TestDistroDetectionOrder:
+    """Detection comes before asking, and the latest-LTS default applies to
+    greenfield projects only. Pinned error: Principle 1 told the agent to
+    default to the latest LTS whenever the user did not specify, which pulls
+    APIs an existing workspace does not have. Conflicting evidence must be
+    reported rather than silently resolved — the shell's sourced distro and
+    the workspace's build pin answer different questions."""
+
+    def _principle_1_block(self):
+        lines = _lines(SKILL_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith('### ') and 'Distro awareness' in line)
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith('### ')), len(lines))
+        return '\n'.join(lines[start:end])
+
+    def test_detection_precedes_asking(self):
+        block = self._principle_1_block()
+        assert 'echo $ROS_DISTRO' in block
+        assert block.index('echo $ROS_DISTRO') < block.index('Ask the user'), (
+            'environment detection must come before asking the user')
+
+    def test_latest_lts_default_is_greenfield_only(self):
+        block = self._principle_1_block()
+        assert 'Greenfield only' in block
+        assert 'Never resolve an *existing* workspace to the newest LTS' in (
+            _flat(block))
+
+    def test_conflicting_evidence_is_reported_not_resolved(self):
+        block = self._principle_1_block()
+        assert 'Conflict rule' in block
+        assert 'select neither silently' in _flat(block)
+        assert 'inventory evidence' in block, (
+            'ls /opt/ros lists what is installed; it is not a selection')
+
+
+class TestQosDefaultsAreStartingPoints:
+    """The QoS table matches rmw_qos_profile_sensor_data, but a preset is a
+    starting point, not a verdict — and QoS compatibility says nothing about
+    whether the delivered data is timely or safe to act on."""
+
+    def _principle_6_block(self):
+        lines = _lines(SKILL_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith('### ') and 'Quality of Service' in
+                     line)
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith('### ')), len(lines))
+        return '\n'.join(lines[start:end])
+
+    def test_table_is_marked_as_starting_points(self):
+        block = self._principle_6_block()
+        assert 'starting points, not verdicts' in _flat(block)
+
+    def test_reliable_sensor_case_is_allowed(self):
+        block = self._principle_6_block()
+        assert 'RELIABLE' in block and 'safety' in block.lower(), (
+            'the table must allow RELIABLE for sensor data on a safety path')
+
+    def test_compatibility_is_not_validity(self):
+        block = self._principle_6_block()
+        assert 'compatibility alone does not prove' in _flat(block)
+
+
+class TestLifecycleDefaultHasExceptions:
+    """Lifecycle stays the default for resource-owning nodes, but the rule
+    was absolute. Plain nodes are correct in named cases, and lifecycle has
+    a cost — a manager plus new transition-failure states."""
+
+    def _principle_9_block(self):
+        lines = _lines(SKILL_MD)
+        start = next(i for i, line in enumerate(lines)
+                     if line.startswith('### ') and 'Lifecycle-first' in line)
+        end = next((i for i in range(start + 1, len(lines))
+                    if lines[i].startswith('### ')), len(lines))
+        return '\n'.join(lines[start:end])
+
+    def test_plain_node_exceptions_are_named(self):
+        block = self._principle_9_block()
+        assert 'A plain node is the right call' in _flat(block)
+        for needle in ('outer supervisor', 'third-party', 'micro-ROS'):
+            assert needle in block, (
+                f'lifecycle exception missing case: {needle!r}')
+
+    def test_lifecycle_cost_is_stated(self):
+        block = self._principle_9_block()
+        assert 'not free' in _flat(block)
+        assert 'transition-failure' in _flat(block)
+
+
+class TestAiPitfallTableGrowth:
+    """The pitfall table is the skill's accumulated failure memory; rows are
+    append-only and numbered sequentially. This pins the field-review batch
+    (15-22) so a future edit cannot quietly drop them.
+
+    Counted inside the AI-pitfalls section only — other tables in SKILL.md
+    also start rows with a digit, and a whole-file count would drift with
+    any of them."""
+
+    _EXPECTED_MINIMUM = 22
+
+    def _pitfall_section(self):
+        return _md_section(SKILL_MD, 'AI pitfalls')
+
+    def _pitfall_numbers(self):
+        return [int(n) for n in
+                re.findall(r'^\|\s*(\d+)\s*\|', self._pitfall_section(),
+                           re.M)]
+
+    def test_rows_are_sequential_and_complete(self):
+        numbers = self._pitfall_numbers()
+        assert numbers, 'no numbered pitfall rows found in the AI section'
+        assert numbers == list(range(1, len(numbers) + 1)), (
+            f'pitfall numbering must be sequential from 1: {numbers}')
+        assert len(numbers) >= self._EXPECTED_MINIMUM, (
+            f'pitfall table shrank below {self._EXPECTED_MINIMUM} rows')
+
+    def test_field_review_pitfalls_present(self):
+        section = self._pitfall_section()
+        for needle in ('the robot stopped',
+                       'assuming that is what runs',
+                       'array-field semantics',
+                       'TF chain connects',
+                       'hardware verification',
+                       'actuation-onset threshold',
+                       "open-loop smoother's feedback path",
+                       'stale daemon cache'):
+            assert needle in section, (
+                f'SKILL.md pitfall table missing: {needle!r}')
 
 
 REALTIME_MD = os.path.join(ROOT, 'references', 'realtime.md')
