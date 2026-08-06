@@ -12,7 +12,7 @@ description: >
 context: fork
 classification: capability
 category: api-reference
-version: 1.2.0
+version: 1.3.0
 deprecation-risk: medium
 # The hooks block below is Claude Code-specific: the hook schema, the
 # ${CLAUDE_PLUGIN_ROOT} path variable, and the tool-name matcher are not
