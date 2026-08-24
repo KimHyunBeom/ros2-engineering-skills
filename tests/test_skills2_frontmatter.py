@@ -34,9 +34,17 @@ def _parse_frontmatter():
     return metadata
 
 
+def _reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        assert key not in result, f'Duplicate JSON key: {key}'
+        result[key] = value
+    return result
+
+
 def _load_json(path):
     with path.open('r', encoding='utf-8') as handle:
-        return json.load(handle)
+        return json.load(handle, object_pairs_hook=_reject_duplicate_keys)
 
 
 class TestAgentSkillsMetadata:
@@ -78,10 +86,16 @@ class TestPluginPackaging:
     def test_plugin_manifest(self):
         plugin = _load_json(PLUGIN_JSON)
         assert plugin['name'] == 'ros2-engineering'
+        assert plugin['displayName'] == 'ROS 2 Engineering'
         assert plugin['license'] == 'Apache-2.0'
-        assert plugin['skills'] == ['./']
         assert plugin['repository'].endswith('/ros2-engineering-skills')
         assert plugin['author']['email'] == 'yujinhong3@gmail.com'
+
+    def test_root_skill_uses_default_plugin_discovery(self):
+        plugin = _load_json(PLUGIN_JSON)
+        assert 'skills' not in plugin
+        assert SKILL_MD.is_file()
+        assert not (ROOT / 'skills').exists()
 
     def test_marketplace_points_at_plugin_root(self):
         marketplace = _load_json(MARKETPLACE_JSON)

@@ -36,6 +36,18 @@ jobs:
         continue-on-error: true
         run: pip-audit --desc
 
+  plugin-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code@2.1.241
+      - name: Validate plugin with Claude Code
+        run: claude plugin validate . --strict
+
   unit-tests:
     runs-on: ubuntu-latest
     strategy:
@@ -59,6 +71,34 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Exercise PowerShell installer
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'ros2-engineering-skills'
+
+          .\install.ps1 -Target $target -DryRun
+          if (Test-Path -LiteralPath $target) {
+            throw 'DryRun created the target'
+          }
+
+          .\install.ps1 -Target $target
+          if (-not (Test-Path -LiteralPath (Join-Path $target 'SKILL.md') -PathType Leaf)) {
+            throw 'SKILL.md was not installed'
+          }
+          if (-not (Test-Path -LiteralPath (Join-Path $target 'references') -PathType Container)) {
+            throw 'references was not installed'
+          }
+
+          Set-Content -LiteralPath (Join-Path $target 'stale.txt') -Value 'stale'
+          .\install.ps1 -Target $target -Force
+          if (Test-Path -LiteralPath (Join-Path $target 'stale.txt')) {
+            throw 'Force did not replace the existing target'
+          }
 
   ros2-integration:
     runs-on: ubuntu-latest
@@ -89,8 +129,8 @@ jobs:
         with:
           globs: |
             references/*.md
-            SKILL.md
-            README.md
+            docs/*.md
+            *.md
 
   lint-scripts:
     runs-on: ubuntu-latest
