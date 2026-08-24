@@ -9,12 +9,7 @@ __pycache__/
 .DS_Store
 skills/
 .skill-runs.log
-
-# Local Claude Code session data stays out of the repo, but the checked-in
-# project config and its hook scripts must not be swept up with it.
-.claude/*
-!.claude/settings.json
-!.claude/hooks/
+.claude/
 
 # Local virtual environments
 .venv/
