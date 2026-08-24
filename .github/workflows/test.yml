@@ -47,6 +47,22 @@ jobs:
         run: npm install --global @anthropic-ai/claude-code@2.1.241
       - name: Validate plugin with Claude Code
         run: claude plugin validate . --strict
+      - name: Verify loaded plugin components
+        run: |
+          claude --plugin-dir . plugin list --json | tee /tmp/plugin-list.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('/tmp/plugin-list.json').read_text())
+          serialized = json.dumps(data)
+          assert 'ros2-engineering' in serialized
+          PY
+          claude --plugin-dir . plugin details ros2-engineering@inline \
+            | tee /tmp/plugin-details.txt
+          grep -F 'ros2-engineering-skills' /tmp/plugin-details.txt
+          grep -F 'PreToolUse' /tmp/plugin-details.txt
+          grep -F 'Stop' /tmp/plugin-details.txt
 
   unit-tests:
     runs-on: ubuntu-latest
