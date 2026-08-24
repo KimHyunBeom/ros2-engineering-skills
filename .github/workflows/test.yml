@@ -89,7 +89,6 @@ jobs:
         with:
           globs: |
             references/*.md
-            docs/*.md
             SKILL.md
             README.md
 

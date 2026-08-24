@@ -153,11 +153,17 @@ class TestSkillSizeBudget:
         skill = SKILL_MD.read_text(encoding='utf-8')
         debugging = (ROOT / 'references' / 'debugging.md').read_text(
             encoding='utf-8')
-        commands = (
-            'ros2 node list', 'ros2 service list', 'ros2 action list',
+        skill_commands = (
+            'ros2 node list', 'ros2 topic info', 'ros2 service list',
+            'ros2 action list', 'ros2 param list', 'ros2 interface show',
+            'ros2 control list_controllers', 'ros2 lifecycle list',
+            'ros2 bag record', 'ros2 bag play',
+        )
+        assert sum(command in skill for command in skill_commands) <= 2
+        assert 'Quick CLI reference' in debugging
+        required = (
+            'ros2 node list', 'ros2 topic info /topic_name -v',
             'ros2 lifecycle list', 'ros2 bag play my_bag --clock',
         )
-        assert sum(command in skill for command in commands) <= 2
-        assert 'Quick CLI reference' in debugging
-        for command in commands:
+        for command in required:
             assert command in debugging
