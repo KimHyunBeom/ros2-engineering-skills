@@ -100,7 +100,9 @@ jobs:
         with:
           python-version: '3.12'
       - name: Check scripts syntax
-        run: python -m py_compile scripts/*.py
+        run: |
+          python -m py_compile scripts/*.py
+          bash -n install.sh
       - name: Verify user-facing versions
         run: |
           python scripts/create_package.py --version
@@ -123,6 +125,7 @@ jobs:
         run: |
           python -m pytest \
             tests/test_skills2_frontmatter.py \
-            tests/test_repo_conventions.py -q
+            tests/test_repo_conventions.py \
+            tests/test_installers.py -q
       - name: Run eval fixture smoke check
         run: python scripts/eval_runner.py
