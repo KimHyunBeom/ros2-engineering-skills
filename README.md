@@ -84,6 +84,31 @@ git clone https://github.com/dbwls99706/ros2-engineering-skills.git \
 The root `SKILL.md` and `references/` are platform-neutral. Automatic discovery,
 triggering, tool permissions, and hook support remain client-specific.
 
+### Install from a checkout
+
+Clone once, then copy or link the checkout into a client-specific skill path:
+
+```bash
+git clone https://github.com/dbwls99706/ros2-engineering-skills.git
+cd ros2-engineering-skills
+
+# Default: ~/.agents/skills/ros2-engineering-skills
+./install.sh
+
+# Project-local symbolic link
+./install.sh --target /path/to/project/.agents/skills/ros2-engineering-skills --link
+```
+
+Windows PowerShell provides the same copy, link, force, and dry-run controls:
+
+```powershell
+.\install.ps1
+.\install.ps1 -Target C:\path\to\skills\ros2-engineering-skills -Link
+```
+
+Existing targets are preserved unless `--force` or `-Force` is supplied. Use
+`--dry-run` or `-DryRun` to inspect the operation without changing files.
+
 ### Manual validator use
 
 ```bash
@@ -149,7 +174,7 @@ The workflow contains these gates:
 - flake8 and mypy;
 - Python 3.10, 3.11, and 3.12 unit-test matrix with script coverage;
 - Markdown lint;
-- package-generation and validator smoke checks;
+- package-generation, installer, and validator smoke checks;
 - Docker integration builds for Humble, Jazzy, Kilted, Lyrical, and Rolling.
 
 The Docker jobs verify the generated packages and tools in those containers.
@@ -177,6 +202,8 @@ limitations. See [`docs/EVAL_WORKFLOW.md`](docs/EVAL_WORKFLOW.md).
 ├── .claude-plugin/
 │   ├── plugin.json
 │   └── marketplace.json
+├── install.sh
+├── install.ps1
 ├── evals/
 ├── tests/
 └── .github/workflows/test.yml
