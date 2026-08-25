@@ -41,3 +41,17 @@ def test_ci_uses_standard_plugin_locations():
     assert '.claude-plugin/plugin.json' in workflow
     assert 'hooks/hooks.json' in workflow
     assert '.claude/hooks/' not in workflow
+
+
+def test_readme_preserves_before_after_examples():
+    readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+    assert '## Before / After' in readme
+    assert '<th width="50%">Without this skill</th>' in readme
+    assert '<th width="50%">With this skill loaded</th>' in readme
+    prompts = (
+        "My ROS 2 subscriber isn't receiving any sensor messages.",
+        'Create a C++ driver package for my LiDAR sensor.',
+    )
+    for prompt in prompts:
+        assert prompt in readme
+    assert 'ros2 topic info /camera/image_raw -v' in readme

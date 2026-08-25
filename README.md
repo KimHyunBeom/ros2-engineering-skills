@@ -28,10 +28,32 @@ examples include:
 This skill makes those evidence boundaries explicit and routes each task to the
 smallest relevant reference document.
 
-## Evidence-first example
+## Before / After
 
-For a subscriber that receives no camera messages, do not assume QoS is the
-root cause. Inspect the graph first:
+> **Prompt:** *"My ROS 2 subscriber isn't receiving any sensor messages. Help me fix it."*
+
+<table>
+<tr>
+<th width="50%">Without this skill</th>
+<th width="50%">With this skill loaded</th>
+</tr>
+<tr>
+<td>
+
+```python
+# Guess at the fix before inspecting the live endpoints.
+from rclpy.qos import qos_profile_sensor_data
+
+sub = node.create_subscription(
+    Image, '/camera/image_raw',
+    callback, qos_profile_sensor_data)
+```
+
+May work by accident, but assumes the publisher exists, the topic type is
+correct, and BEST_EFFORT QoS is the actual mismatch.
+
+</td>
+<td>
 
 ```bash
 ros2 topic list
@@ -40,17 +62,69 @@ ros2 topic info /camera/image_raw -v
 ros2 node list --no-daemon
 ```
 
-When the endpoint output shows a BEST_EFFORT publisher and a RELIABLE
-subscriber, the bundled checker can reproduce the DDS compatibility result:
+```python
+# Apply this only when endpoint inspection shows a
+# BEST_EFFORT publisher that the subscriber must match.
+from rclpy.qos import qos_profile_sensor_data
 
-```bash
-python3 scripts/qos_checker.py \
-  --pub best_effort,volatile,keep_last,5 \
-  --sub reliable,volatile,keep_last,10
+sub = node.create_subscription(
+    Image, '/camera/image_raw',
+    callback, qos_profile_sensor_data)
 ```
 
-That establishes a QoS incompatibility. It does not establish message
-freshness, semantic validity, processing rate, or hardware safety.
+Checks graph existence, type, namespaces, and offered/requested QoS first, then
+changes code only when the observed endpoints support that diagnosis.
+
+</td>
+</tr>
+</table>
+
+> **Prompt:** *"Create a C++ driver package for my LiDAR sensor."*
+
+<table>
+<tr>
+<th width="50%">Without this skill</th>
+<th width="50%">With this skill loaded</th>
+</tr>
+<tr>
+<td>
+
+```text
+my_lidar_driver/
+├── src/main.cpp
+├── CMakeLists.txt
+└── package.xml
+```
+
+A bare node with no launch/config split, tests, explicit QoS and frame contract,
+or documented resource and shutdown behavior.
+
+</td>
+<td>
+
+```text
+my_lidar_driver/
+├── include/my_lidar_driver/
+│   └── my_lidar_driver_node.hpp
+├── src/
+│   ├── my_lidar_driver_node.cpp
+│   └── main.cpp
+├── launch/bringup.launch.py
+├── config/params.yaml
+├── test/
+│   ├── test_driver.cpp
+│   └── test_bringup.py
+├── CMakeLists.txt
+└── package.xml
+```
+
+Chooses `Node` or `LifecycleNode` from resource ownership and supervisor design,
+declares QoS, frames, timestamps, limits, and dependencies, and adds
+distro-compatible build, launch, configuration, and test scaffolding.
+
+</td>
+</tr>
+</table>
 
 ## Installation
 
