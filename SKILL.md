@@ -1,41 +1,21 @@
 ---
 name: ros2-engineering-skills
 description: >
-  TRIGGER when the user: writes or reviews ROS 2 nodes (rclcpp/rclpy), creates packages
-  (colcon/ament), edits launch files (.launch.py), configures QoS or DDS, writes URDF/xacro,
-  implements ros2_control hardware interfaces or controllers, sets up Nav2/MoveIt 2 pipelines,
-  processes sensor data (camera/LiDAR/PCL), works with Gazebo/Isaac Sim, configures SROS2
-  security, develops micro-ROS firmware, manages multi-robot fleets (Open-RMF), debugs with
-  ros2 doctor/rosbag2, deploys via Docker/cross-compilation, or migrates from ROS 1.
-  DO NOT TRIGGER for general C++/Python questions unrelated to ROS 2, non-robotics middleware,
-  or web/mobile development tasks.
-context: fork
-classification: capability
-category: api-reference
-version: 1.3.0
-deprecation-risk: medium
-# The hooks block below is Claude Code-specific: the hook schema, the
-# ${CLAUDE_PLUGIN_ROOT} path variable, and the tool-name matcher are not
-# part of the Agent Skills standard. Other platforms (Codex, Cursor,
-# Gemini CLI) ignore this block — see "Platform support" in the body for
-# the manual fallback.
-hooks:
-  PreToolUse:
-    # Matcher = Claude Code's file-mutation and shell tools.
-    - matcher: "Edit|Write|MultiEdit|Bash"
-      hooks:
-        - type: command
-          # timeout is in SECONDS (not milliseconds). The command-hook
-          # default is 600 s; these validators are local file scans that
-          # finish in well under a second.
-          command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/skill_validate_hook.py"
-          timeout: 10
-  Stop:
-    - hooks:
-        - type: command
-          command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/skill_stop_hook.py"
-          timeout: 15
-# Eval definitions live in evals/eval.yaml (single source of truth).
+  Use for designing, implementing, reviewing, debugging, or validating ROS 2
+  software and configuration: rclcpp/rclpy nodes, colcon and ament packages,
+  launch files, QoS and DDS, URDF/xacro and tf2, ros2_control, Nav2, MoveIt 2,
+  perception and sensor integration, simulation, SROS2, micro-ROS, multi-robot
+  systems, testing, runtime diagnosis, deployment, and ROS 1 migration. Do not
+  use for general C++ or Python questions unrelated to ROS 2, non-robotics
+  middleware, or web and mobile development.
+license: Apache-2.0
+compatibility: >
+  Knowledge files are platform-neutral. Bundled validators require Python 3.10
+  or newer; build and runtime verification require the target ROS 2 environment.
+metadata:
+  author: dbwls99706
+  version: "1.3.0"
+  repository: "https://github.com/dbwls99706/ros2-engineering-skills"
 ---
 
 # ROS 2 Engineering Skills
@@ -69,9 +49,9 @@ leaves the working tree untouched.
 
 **Platform support:** `SKILL.md` and `references/` are platform-neutral
 knowledge documents. `scripts/` can be run manually on any platform whose
-environment has Python and the repository dependencies. The hook wiring
-(automatic execution) and `.skill-runs.log` are Claude Code-specific; on
-other platforms run the validators manually from the skill root:
+environment has Python and the repository dependencies. The hook wiring in
+`hooks/hooks.json` and `.skill-runs.log` are Claude Code-specific; on other
+platforms run the validators manually from the skill root:
 `SKILL_WORKSPACE=<dir> python3 scripts/skill_stop_hook.py` and
 `python3 scripts/skill_validate_hook.py --file <src> / --command '<cmd>'`
 (the command string is inspected only, never executed; without those flags
@@ -173,12 +153,13 @@ Pin the exact distro in Dockerfile, CI, and documentation so builds are reproduc
 
 ### 2. C++ vs Python decision
 
-Choose the language based on the node's role, not personal preference.
-**rclcpp (C++)**: control loops ≥100 Hz, deterministic memory allocation
-(real-time path), hardware drivers and controller plugins, intra-process
-zero-copy. **rclpy (Python)**: orchestration, monitoring, parameter
-management, rapid prototyping, Python-native ML frameworks — anything off
-the latency-critical path.
+Choose the language from measured latency, jitter, allocation, library, and
+operational requirements — not from a frequency threshold alone.
+**rclcpp (C++)** is generally appropriate for hardware drivers, controller
+plugins, allocation-sensitive paths, and tight latency or jitter budgets.
+**rclpy (Python)** is generally appropriate for orchestration, monitoring,
+parameter management, rapid prototyping, and Python-native frameworks.
+Measure the target workload before treating either language as mandatory.
 
 **Mixed stacks are normal.** A typical robot has C++ drivers/controllers and Python
 orchestration/monitoring. Note: `component_container` (composition) only loads
@@ -198,12 +179,14 @@ mechanisms in (2). Details: `references/nodes-executors.md`.
 
 ### 3. Package structure conventions
 
-Follow the standard layout — `package.xml` (format 3, explicit `<depend>`
+Follow the standard layout — `package.xml` (format 3, explicit dependency
 tags), `config/params.yaml`, `launch/*.launch.py`, `src/` +
-`include/<pkg>/` for C++ or `<pkg>/` for Python, and `test/`. Keep custom
-msg/srv/action definitions in a dedicated `*_interfaces` package so
-downstream packages can depend on interfaces without the implementation.
-Full annotated layout: `references/workspace-build.md`.
+`include/<pkg>/` for C++ or `<pkg>/` for Python, and `test/`. A dedicated
+`*_interfaces` package is usually preferable when interfaces are shared by
+multiple packages or must remain independent of implementation dependencies.
+Defining and using interfaces in one `ament_cmake` package is supported when
+that coupling is intentional. Full annotated layout:
+`references/workspace-build.md`.
 
 ### 4. Parameter discipline
 
@@ -249,11 +232,11 @@ and a sensor whose loss the system cannot detect (a safety-relevant scan,
 a one-shot calibration) belongs on RELIABLE. Decide per data path, then
 record why.
 
-QoS mismatches are the #1 cause of "I published but nobody receives."
-Always check compatibility with `ros2 topic info -v` when debugging.
-Matching QoS is necessary for communication, but compatibility alone does
-not prove that the delivered data is timely, semantically valid, or safe to
-act on (Principle 13).
+QoS mismatch is one common cause of "I published but nobody receives."
+Inspect the actual endpoints with `ros2 topic info <topic> -v` before
+changing either side. Matching QoS is necessary for communication, but
+compatibility alone does not prove that the delivered data is timely,
+semantically valid, or safe to act on (Principle 13).
 
 **DEADLINE and LIFESPAN** are critical for safety-critical systems. DEADLINE fires an
 event when no message arrives within the specified period (detect stale data). LIFESPAN
@@ -275,10 +258,12 @@ stale data). See `references/communication.md` section 9 for full API and exampl
 
 ### 8. Thread safety and callbacks
 
-- A `MutuallyExclusiveCallbackGroup` serializes its callbacks — safe for
-  shared state without locks, but limits throughput.
-- A `ReentrantCallbackGroup` allows parallel execution — you must protect
-  shared state with `std::mutex` (C++) or `threading.Lock` (Python).
+- A `MutuallyExclusiveCallbackGroup` serializes callbacks in that same group.
+  Shared state is lock-free only when every access is confined to the group
+  and no other callback group, executor, or ordinary thread can touch it.
+- A `ReentrantCallbackGroup` permits overlapping execution. Actual parallelism
+  also requires an executor with enough worker threads; protect shared state
+  whenever callbacks or external threads can overlap.
 - **Calling a service from a callback:** If the callback registers the
   request asynchronously — rclcpp: `async_send_request(request, response_callback)`;
   rclpy: `future = client.call_async(request)` then
@@ -333,7 +318,9 @@ transition-failure states the system must handle.
 - Enable `-Wall -Wextra -Wpedantic` and treat warnings as errors in CI.
 - Run `colcon test` with `--event-handlers console_cohesion+` so test
   output groups by package.
-- Pin rosdep keys in `rosdep.yaml` for reproducible dependency resolution.
+- Treat rosdep keys as platform mappings, not dependency locks. Reproducible
+  builds also need pinned source revisions, base images or repositories, and
+  recorded dependency resolution inputs.
 - Prefer compiler caches and dependency/container layers **that have explicit,
   reproducible invalidation inputs** — `.ccache/`, apt/rosdep, base images. They
   are not automatically safe either: an apt layer goes stale with the distro,
@@ -423,13 +410,13 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 |---|---------|----------------|-----------------|
 | 1 | Using `spin_until_future_complete` inside a callback | Deadlocks the executor — the callback blocks waiting for a response that can never be delivered | Register a response callback and return without waiting; a separate callback group (or reentrant + `MultiThreadedExecutor`) is needed only when a synchronous wait is unavoidable |
 | 2 | Generating Foxy-era API for Jazzy/Kilted | `node_executable` is deprecated, `export_state_interfaces()` signature changed in ros2_control 4.x | Detect the distro from the environment and workspace first (Principle 1) — never default an existing workspace to the newest LTS — then check the feature matrix above |
-| 3 | Omitting QoS in publisher/subscriber creation | Defaults silently mismatch — publisher sends but subscriber receives nothing | Always specify QoS explicitly; use the QoS defaults table in Principle 6 |
-| 4 | Creating a `msg/` directory inside a non-interfaces package | Builds locally but fails in CI — interface packages need `rosidl_generate_interfaces` | Put messages in a dedicated `*_interfaces` package |
+| 3 | Omitting an intentional QoS contract | An integer depth selects a client-library default that may not match the remote endpoint or the data path's needs | Inspect the live endpoints, then specify or reuse a named QoS profile deliberately |
+| 4 | Treating every `msg/` directory in an implementation package as invalid | Same-package interfaces are supported, but they couple consumers to implementation dependencies and build type | Use a dedicated `*_interfaces` package when the API is shared or independently versioned; otherwise document the intentional coupling |
 | 5 | Hardcoding `/opt/ros/humble/` paths in launch files | Breaks on any other distro or install prefix | Use `FindPackageShare`, `PathJoinSubstitution`, or environment substitutions |
-| 6 | Forgetting `<depend>` tags in `package.xml` | `colcon build` works in overlay but `rosdep install` and Docker builds fail | Declare every `find_package()` / `import` as `<depend>` in package.xml |
+| 6 | Declaring every dependency as a generic `<depend>` | Build, export, runtime, and test dependencies have different scopes; Python standard-library imports are not ROS package dependencies | Declare ROS packages and external libraries in the appropriate package.xml dependency tags |
 | 7 | Using `time.sleep()` for rate control in rclpy | Blocks the executor thread; timers and subscriptions stop firing | Use `create_timer()` or `Rate` with a `MultiThreadedExecutor` |
 | 8 | Treating process-side cleanup as crash safety | Destructors never run on SIGKILL/power loss and are not guaranteed on segfaults — the robot keeps its last command | Zero-command in `on_deactivate` + destructor is best-effort hygiene only; require a downstream command timeout, heartbeat/watchdog, and hardware e-stop (`references/safety-estop.md`) |
-| 9 | Mixing `ament_target_dependencies()` and `target_link_libraries()` | Kilted deprecated `ament_target_dependencies` — mixing causes link errors | Use `target_link_libraries()` with modern CMake targets for Kilted+; `ament_target_dependencies()` for Humble/Jazzy |
+| 9 | Mixing CMake dependency mechanisms without checking exported targets | A mixture can duplicate linkage, hide missing usage requirements, or break across distributions | Use the target-based or ament idiom supported by the installed packages and keep it consistent per target |
 | 10 | Generating `rospy` / `roscpp` code instead of `rclpy` / `rclcpp` | ROS 1 patterns in a ROS 2 context — nothing compiles | This skill is ROS 2 only — always use `rclpy`/`rclcpp` APIs |
 | 11 | Ignoring `use_sim_time` parameter in simulation | Real clock diverges from Gazebo clock — tf lookups fail, controllers drift | Set `use_sim_time:=true` in launch and pass `--clock` to `ros2 bag play` |
 | 12 | Publishing before subscribers connect (no TRANSIENT_LOCAL) | First N messages lost — map, URDF, or initial config never received | Use `TRANSIENT_LOCAL` durability for latched-style data, or publish in `on_activate` with a startup delay |
@@ -453,11 +440,12 @@ These are mistakes AI agents repeatedly make when generating ROS 2 code.
 <!-- LAST_UPDATED: 2026-03-30 — Keep in sync with the distro table in Principle 1. -->
 When upgrading between distributions, check these breaking changes first:
 
-- **Foxy → Humble:** complete API overhaul (lifecycle, actions stabilized in Humble);
-  `ros2_control` was not bundled in Foxy; Nav2 renamed `recoveries_server` →
-  `behavior_server` and `nav2_recoveries/` → `nav2_behaviors/` (Galactic → Humble
-  migration — pre-Humble recovery naming does not exist on Humble). Plan a rework,
-  not a port.
+- **Foxy → Humble:** expect a broad migration across client libraries,
+  packaging, lifecycle, actions, Nav2, and ros2_control rather than assuming
+  one uniform API boundary. `ros2_control` was not bundled in Foxy; Nav2
+  renamed `recoveries_server` → `behavior_server` and `nav2_recoveries/` →
+  `nav2_behaviors/` during the Galactic → Humble migration. Verify each
+  package against the installed release.
 - **Humble → Jazzy:** `ros2_control` 2.x → 4.x — interface exports auto-generated,
   `get_value()` → `get_optional<T>()`, spawner uses `--param-file`, all `<ros2_control>`
   joints must exist in the URDF (details: `references/hardware-interface.md`); default

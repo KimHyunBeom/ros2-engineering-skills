@@ -18,7 +18,7 @@ backs the comparison.
 
 ## Directory layout
 
-```
+```text
 evals/
   eval.yaml                # eval definitions, criteria, weights, parity config
   prompts/<name>.md        # input prompt for each eval
@@ -93,7 +93,7 @@ Every run appends one JSON-lines entry to
 `consecutive_failures_for_deprecation` runs (default 3) all sit below
 threshold, the report prints:
 
-```
+```text
 *** DEPRECATION CANDIDATE: most recent 3 runs all below threshold ***
 ```
 

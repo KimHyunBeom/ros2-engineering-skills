@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose a focused capability, reference, validator, or workflow improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: Which real ROS 2 task or failure would this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Describe the smallest useful implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and verification
+      description: Include source references, fixtures, or a test strategy.

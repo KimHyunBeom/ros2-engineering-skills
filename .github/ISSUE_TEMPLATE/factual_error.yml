@@ -1,0 +1,33 @@
+name: Documentation accuracy report
+description: Report guidance that is incorrect, absolute, stale, or distribution-sensitive
+title: "docs: "
+labels: [documentation]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Location
+      description: File, heading, and line or quoted claim.
+    validations:
+      required: true
+  - type: textarea
+    id: claim
+    attributes:
+      label: Problematic claim
+      description: Explain precisely what is incorrect or overbroad.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Link upstream source or provide installed-version evidence and reproduction.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: ROS distribution, OS, package version, and verification level.
+    validations:
+      required: true
