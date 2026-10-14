@@ -12,6 +12,8 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 SCRIPTS_DIR = os.path.join(os.path.dirname(__file__), '..', 'scripts')
 
 sys.path.insert(0, SCRIPTS_DIR)
@@ -110,6 +112,161 @@ class TestStopHookLaunchValidation:
             '        return None\n'
         )
         assert validate_launch_file_syntax(str(launch)) == []
+
+
+class TestStopHookNameMatchedNonLaunchFiles:
+    """`*_launch.py` is also an ordinary module suffix; only launch code counts.
+
+    Three files in one robot project were flagged "Missing
+    generate_launch_description" at every turn end for weeks: two pytest
+    modules and a stub that impersonates the `ros2 launch` process. None of
+    them is a launch file.
+    """
+
+    def _issues(self, tmp_path, relative, source):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(source, bytes):
+            path.write_bytes(source)
+        else:
+            path.write_text(source)
+        return validate_launch_file_syntax(str(path))
+
+    def test_process_fake_named_launch_is_not_a_launch_file(self, tmp_path):
+        assert self._issues(tmp_path, 'tests/fakes/fake_launch.py',
+                            'import signal\nimport sys\n'
+                            'def main():\n'
+                            '    signal.signal(signal.SIGINT, lambda *a: sys.exit(0))\n'
+                            "if __name__ == '__main__':\n"
+                            '    main()\n') == []
+
+    def test_pytest_module_named_launch_is_not_a_launch_file(self, tmp_path):
+        assert self._issues(tmp_path, 'test/test_integrated_http_launch.py',
+                            'import subprocess\n'
+                            'def test_starts():\n'
+                            "    assert subprocess.run(['true']).returncode == 0\n") == []
+
+    def test_test_module_importing_launch_is_still_a_test(self, tmp_path):
+        # A pytest module may drive `ros2 launch` through the launch API; the
+        # import alone does not make it a launch description.
+        for relative in ('test/test_bringup_launch.py', 'src/pkg/test_bringup_launch.py',
+                         'tests/integration/http_launch.py'):
+            assert self._issues(tmp_path, relative,
+                                'import launch\nimport pytest\n'
+                                'def test_up():\n    assert launch\n') == [], relative
+
+    def test_test_module_with_an_entry_point_is_validated(self, tmp_path):
+        issues = self._issues(tmp_path, 'test/test_bringup_launch.py',
+                              'from launch import LaunchDescription\n'
+                              'async def generate_launch_description():\n'
+                              '    return LaunchDescription([])\n')
+        assert len(issues) == 1 and 'coroutine' in issues[0]['message']
+
+    def test_launch_testing_module_is_not_a_launch_description(self, tmp_path):
+        assert self._issues(tmp_path, 'test/test_talker.launch.py',
+                            'import launch\n'
+                            'import launch_testing.actions\n'
+                            'def generate_test_description():\n'
+                            '    return launch.LaunchDescription(\n'
+                            '        [launch_testing.actions.ReadyToTest()])\n') == []
+
+    def test_underscore_launch_file_importing_launch_still_fails(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot_launch.py',
+                              'from launch import LaunchDescription\n'
+                              'def generate_description():\n'
+                              '    return LaunchDescription([])\n')
+        assert len(issues) == 1
+        assert issues[0]['severity'] == 'error'
+        assert 'Missing' in issues[0]['message']
+
+    def test_import_inside_a_function_counts(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot_launch.py',
+                              'def build():\n'
+                              '    from launch_ros.actions import Node\n'
+                              '    return Node(package="p", executable="e")\n')
+        assert len(issues) == 1 and 'Missing' in issues[0]['message']
+
+    def test_entry_point_without_launch_import_is_validated(self, tmp_path):
+        # Launch objects may come from a shared helper module.
+        assert self._issues(tmp_path, 'launch/robot_launch.py',
+                            'from my_pkg.common import make_description\n'
+                            'def generate_launch_description():\n'
+                            '    return make_description()\n') == []
+
+    def test_dot_launch_file_without_imports_still_fails(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot.launch.py',
+                              'def generate_description():\n    return None\n')
+        assert len(issues) == 1
+        assert 'Missing' in issues[0]['message']
+
+    def test_syntax_error_in_a_launch_file_is_still_reported(self, tmp_path):
+        # The parser rejects the file before imports can be inspected, so the
+        # text decides: launch code with a syntax error is the finding that
+        # matters most.
+        for relative in ('launch/robot.launch.py', 'launch/robot_launch.py'):
+            issues = self._issues(tmp_path, relative,
+                                  'from launch import LaunchDescription\n'
+                                  'def generate_launch_description(:\n')
+            assert len(issues) == 1 and 'Syntax error' in issues[0]['message'], relative
+        assert self._issues(tmp_path, 'tests/fake_launch.py',
+                            'import signal\ndef main(:\n') == []
+
+    def test_undecodable_launch_file_is_a_finding(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot.launch.py',
+                              '# 로봇\nfrom launch import LaunchDescription\n'.encode('cp949'))
+        assert len(issues) == 1 and 'encoding' in issues[0]['message']
+        assert self._issues(tmp_path, 'launch/legacy.launch.py',
+                            '# -*- coding: cp949 -*-\n# 로봇\n'
+                            'def generate_launch_description():\n'
+                            '    return None\n'.encode('cp949')) == []
+
+    def test_plain_import_of_a_launch_package_counts(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/robot_launch.py',
+                              'import launch_ros.actions\n'
+                              'def build():\n    return launch_ros.actions.Node(package="p")\n')
+        assert len(issues) == 1 and 'Missing' in issues[0]['message']
+
+    def test_helper_module_outside_tests_without_launch_code_is_skipped(self, tmp_path):
+        assert self._issues(tmp_path, 'scripts/helper_launch.py',
+                            'import os\n\ndef main():\n    return os.getcwd()\n') == []
+
+    def test_undecodable_bytes_after_the_header_are_a_finding(self, tmp_path):
+        # tokenize only inspects the first two lines for the coding cookie, so
+        # bad bytes further down surface as UnicodeDecodeError, not SyntaxError.
+        for relative, expected in (('launch/a.launch.py', 1), ('launch/a_launch.py', 1),
+                                   ('scripts/fake_launch.py', 0)):
+            tail = 'from launch import LaunchDescription\n' if expected else 'x = 1\n'
+            body = 'import os\nimport sys\n' + tail
+            issues = self._issues(tmp_path, relative, body.encode('utf-8') + '# 로봇\n'.encode('cp949'))
+            assert len(issues) == expected, relative
+            assert not issues or 'encoding' in issues[0]['message']
+
+    def test_empty_string_loop_never_runs(self, tmp_path):
+        issues = self._issues(tmp_path, 'launch/s.launch.py',
+                              "for ch in '':\n    def generate_launch_description():\n"
+                              "        return None\n")
+        assert [i['severity'] for i in issues] == ['error']
+
+    def test_loop_bodies_are_not_certain_bindings(self, tmp_path):
+        # `for _ in []` provably never binds: error. Other loops may run zero
+        # times and `else` is skipped after `break`: only some paths bind.
+        issues = self._issues(tmp_path, 'launch/a.launch.py',
+                              'for _ in []:\n'
+                              '    def generate_launch_description():\n'
+                              '        return None\n')
+        assert [i['severity'] for i in issues] == ['error'] and 'Missing' in issues[0]['message']
+        for source in ('for i in range(1):\n    break\nelse:\n'
+                       '    def generate_launch_description():\n        return None\n',
+                       'for i in range(1):\n    def generate_launch_description():\n'
+                       '        return None\n',
+                       'while flag:\n    def generate_launch_description():\n'
+                       '        return None\n'):
+            issues = self._issues(tmp_path, 'launch/b.launch.py', source)
+            assert [i['severity'] for i in issues] == ['warning'], source
+            assert 'some execution paths' in issues[0]['message']
+        assert self._issues(tmp_path, 'launch/c.launch.py',
+                            'for _ in []:\n    pass\nelse:\n'
+                            '    def generate_launch_description():\n        return None\n') == []
 
 
 class TestStopHookLaunchEntryPointRejections:
@@ -593,11 +750,30 @@ class TestValidateHookAntiPatterns:
         assert len(issues) >= 1
         assert any('Global' in i['message'] for i in issues)
 
-    def test_detects_ros_localhost_only(self):
+    def test_detects_ros_localhost_only(self, monkeypatch):
+        monkeypatch.delenv('ROS_DISTRO', raising=False)  # unknown distro keeps warning
         issues = check_content(
             'os.environ["ROS_LOCALHOST_ONLY"] = "1"', 'test.py')
         assert len(issues) >= 1
         assert any('ROS_LOCALHOST_ONLY' in i['message'] for i in issues)
+        assert any('since Iron' in i['message'] for i in issues)
+
+    @pytest.mark.parametrize('distro,expected', [
+        ('foxy', 0), ('galactic', 0), ('humble', 0), ('Humble', 0),
+        ('iron', 1), ('jazzy', 1), ('rolling', 1), ('', 1), (None, 1)])
+    def test_ros_localhost_only_advice_follows_the_distro(self, monkeypatch, distro, expected):
+        # ROS_AUTOMATIC_DISCOVERY_RANGE does not exist before Iron, so on Foxy
+        # or Humble ROS_LOCALHOST_ONLY is the correct variable and the advice
+        # would open discovery to the network. One robot project saw this
+        # warning 27 times on Foxy.
+        if distro is None:
+            monkeypatch.delenv('ROS_DISTRO', raising=False)
+        else:
+            monkeypatch.setenv('ROS_DISTRO', distro)
+        issues = check_content('export ROS_LOCALHOST_ONLY=1\nnode = 1\n', 'bringup.py')
+        assert len([i for i in issues if 'ROS_LOCALHOST_ONLY' in i['message']]) == expected
+        # Other checks are unaffected by the distro gate.
+        assert len(check_content('time.sleep(1)', 'node.py')) == 1
 
     def test_detects_deprecated_node_executable(self):
         # Deprecated launch_ros kwarg - check only fires on .launch.py files
@@ -822,6 +998,65 @@ class TestDangerousCommandDetection:
 
     def test_dangerous_patterns_non_empty(self):
         assert len(DANGEROUS_COMMAND_PATTERNS) >= 5
+
+    def test_all_dangerous_patterns_compile_and_declare_a_position(self):
+        # The command-position prefix is prepended to a pattern string, so an
+        # inline (?i) would raise "global flags not at the start"; flags live
+        # in the `flags` field instead.
+        import re
+        positions = {check['position'] for check in DANGEROUS_COMMAND_PATTERNS}
+        assert positions == {'command', 'anywhere'}
+        for check in DANGEROUS_COMMAND_PATTERNS:
+            assert '(?i)' not in check['pattern'], check['message']
+            re.compile(check['pattern'], check.get('flags', 0))
+
+    def test_mentioning_a_dangerous_command_is_not_running_it(self):
+        # Exit 2 refuses the tool call outright, so these read-only commands
+        # were blocked although nothing destructive would run.
+        for cmd in ['grep -rn mkfs tests/*.py',
+                    'man mkfs.ext4 | head',
+                    'which mkfs.vfat',
+                    "git commit -m 'docs: never run mkfs on the robot SD card'",
+                    "printf '%s\\n' 'never run rm -rf / on the robot' >> NOTES.md",
+                    "cat > SAFETY.md <<'EOF'\nDo not run rm -rf / or "
+                    "dd if=x of=/dev/sda here.\nEOF",
+                    'python3 -c "print(\'Format-Volume is Windows only\')"',
+                    'Get-Help Clear-Disk -Full',
+                    'apt list --installed | grep -i chmod']:
+            assert _check_dangerous_commands(cmd) == [], cmd
+
+    def test_dangerous_command_behind_wrappers_or_quotes_is_blocked(self):
+        for cmd in ['sudo mkfs.ext4 /dev/sdb1',
+                    'sudo -u root mkfs.vfat /dev/sdc1',
+                    'FOO=1 env A=2 rm -rf /',
+                    'timeout 5 dd if=/dev/zero of=/dev/sda',
+                    'nice -n 19 rm -rf /usr',
+                    'echo y | sudo mkfs /dev/sdb',
+                    'ls; mkfs.ext4 /dev/sdb',
+                    'x=$(mkfs.ext4 /dev/sdb)',
+                    "ssh robot 'sudo mkfs.ext4 /dev/mmcblk0p1'",
+                    'bash -c "rm -rf / && echo gone"',
+                    "cat > wipe.sh <<'EOF'\nrm -rf /\nEOF",
+                    'Get-Disk 1 | Clear-Disk -RemoveData',
+                    'pwsh -Command "Format-Volume -DriveLetter D"',
+                    'REMOVE-PARTITION -DiskNumber 1 -PartitionNumber 1']:
+            assert _check_dangerous_commands(cmd), cmd
+
+    def test_operator_patterns_still_match_anywhere(self):
+        # Redirections and structures are not program names: `>` in the middle
+        # of a pipeline is as destructive as at its start.
+        for cmd in ['echo something > /dev/sda',
+                    'cat image.img >/dev/nvme0n1',
+                    ':(){ :|:& };:',
+                    'rmdir /s /q C:\\',
+                    'Get-ChildItem; Remove-Item -Recurse -Force C:/']:
+            assert _check_dangerous_commands(cmd), cmd
+
+    def test_wrapper_prefix_stays_linear_on_long_input(self):
+        import time
+        start = time.monotonic()
+        _check_dangerous_commands('sudo ' + '-a b ' * 20000 + 'true')
+        assert time.monotonic() - start < 2.0
 
 
 class TestPowerShellDangerousCommands:

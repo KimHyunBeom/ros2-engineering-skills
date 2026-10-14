@@ -38,6 +38,56 @@ $Exists = $null -ne $TargetItem
 if ($Exists -and -not $Force) {
     throw "Target already exists: $Target (use -Force to replace it)"
 }
+# -Force replaces a previous installation of this skill and nothing else. The
+# Remove-Item -Recurse below would otherwise delete a mistyped parent such as
+# ~/.claude/skills or ~/.claude (settings, transcripts, other skills). The same
+# judgement applies to -DryRun so a rehearsal cannot pass where the real run
+# would refuse.
+if ($Exists) {
+    $Leaf = Split-Path -Leaf $Target
+    $ClientDirs = @('skills', '.claude', '.codex', '.cursor', '.gemini', '.agents', '.config')
+    if ($ClientDirs -contains $Leaf.ToLowerInvariant() -or
+        ((Split-Path -Parent $Target) -eq $HomePath -and $Leaf.StartsWith('.'))) {
+        throw "Refusing to replace ${Target}: client configuration directory"
+    }
+    $ExistingSkill = Join-Path $Target 'SKILL.md'
+    $ExistingReferences = Join-Path $Target 'references'
+    if (-not $TargetItem.PSIsContainer -or
+        -not (Test-Path -LiteralPath $ExistingSkill -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $ExistingReferences -PathType Container) -or
+        -not (Select-String -LiteralPath $ExistingSkill -Pattern '^name: ros2-engineering-skills$' -Quiet)) {
+        throw "Refusing to replace ${Target}: not an existing ros2-engineering-skills installation"
+    }
+    $Manifest = Join-Path $Target 'INSTALL_PROVENANCE.json'
+    if (Test-Path -LiteralPath $Manifest -PathType Leaf) {
+        # Must equal PROVENANCE_SCHEMA in scripts/install_skill.py (a test
+        # keeps the two in step).
+        $ProvenanceSchema = 1
+        $Described = $false
+        try {
+            $Raw = Get-Content -LiteralPath $Manifest -Raw -Encoding UTF8
+            # ConvertFrom-Json unrolls a one-element array into its object, so
+            # the raw text decides that the top level is a single object.
+            if ($null -ne $Raw -and $Raw.TrimStart().StartsWith('{')) {
+                $Provenance = $Raw | ConvertFrom-Json
+                $Version = $Provenance.schema_version
+                # Exact types: -eq converts to the left operand's type, so a
+                # string "1" or JSON true would otherwise pass for 1.
+                $Described = ($Provenance -is [System.Management.Automation.PSCustomObject]) -and
+                    ($Provenance.skill_name -is [string]) -and
+                    ($Provenance.skill_name -ceq 'ros2-engineering-skills') -and
+                    ($Version -is [int] -or $Version -is [long]) -and
+                    ($Version -eq $ProvenanceSchema)
+            }
+        }
+        catch {
+            $Described = $false
+        }
+        if (-not $Described) {
+            throw "Refusing to replace ${Target}: provenance manifest does not describe this skill"
+        }
+    }
+}
 
 $Mode = if ($Link) { 'link' } else { 'copy' }
 if ($DryRun) {
@@ -81,3 +131,12 @@ if (-not (Select-String -LiteralPath $Skill -Pattern '^name: ros2-engineering-sk
 }
 
 Write-Output "installed ros2-engineering-skills at $Target ($Mode)"
+if ($Link) {
+    Write-Output @"
+note: the linked checkout contains .claude-plugin/plugin.json and hooks/hooks.json,
+so a client that scans $Target for plugins may register its PreToolUse and Stop
+hooks. Whether that happens depends on the client and its version; this installer
+does not configure hooks. Restart running sessions after changing the link, and
+use scripts/install_skill.py for a hook-free knowledge-only copy.
+"@
+}
